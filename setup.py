@@ -14,7 +14,7 @@ from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
 from distutils.version import LooseVersion
 from distutils.file_util import copy_file
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
+from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension, CUDA_HOME
 
 path = os.path.dirname(os.path.realpath(__file__))
 
@@ -121,6 +121,16 @@ ext_modules.append(
         cmake_path=os.path.join(path, "transformer_engine/common"),
         sources=[],
         include_dirs=include_dirs,
+    )
+)
+
+# add TorchScript op to the build
+ext_modules.append(
+    CppExtension(
+        name="torchscript_extension",
+        sources=["transformer_engine/pytorch/torchscript/te_custom_ops/custom_fp8_ops.cpp"],
+        include_dirs=include_dirs,
+        extra_compile_args=['-g'],
     )
 )
 
