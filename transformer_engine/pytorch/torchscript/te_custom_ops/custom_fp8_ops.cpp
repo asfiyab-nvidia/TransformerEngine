@@ -19,11 +19,11 @@ torch::Tensor cast_to_fp8_ts(const at::Tensor &input,
   // scale_inv
   at::Tensor scale_inv = at::ones_like(scale, at::CUDA(GetATenDType(otype)));
 
-  at::Tensor temp = cast_to_fp8(input,
-                                scale,
-                                amax,
-                                scale_inv,
-                                otype);
+  // at::Tensor temp = cast_to_fp8(input,
+  //                               scale,
+  //                               amax,
+  //                               scale_inv,
+  //                               otype);
   return input.clone();
 }
 
