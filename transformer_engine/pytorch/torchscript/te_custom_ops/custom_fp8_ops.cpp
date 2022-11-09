@@ -2,28 +2,25 @@
 #include "extensions.h"
 
 
-torch::Tensor cast_to_fp8_ts(const at::Tensor &input,
+at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           const at::Tensor &scale)
 {
-  // Should invoke: texcpp.cast_to_fp8(inp, meta, tex.FP8FwdTensors.GEMM1_INPUT, fp8_type)
-  // Scale input will be used to initialize arguments needed by texcpp.cast_to_fp8
-
   // otype
   transformer_engine::DType otype = transformer_engine::DType::kFloat8E4M3;
 
-  // perform necessary conversions to scale?
-
   // amax
-  at::Tensor amax = at::zeros((1, 1), at::CUDA(GetATenDType(otype)));
+  at::Tensor amax = at::zeros({1, 1});
 
   // scale_inv
-  at::Tensor scale_inv = at::ones_like(scale, at::CUDA(GetATenDType(otype)));
+  at::Tensor scale_inv = at::ones_like(scale);
 
-  // at::Tensor temp = cast_to_fp8(input,
-  //                               scale,
-  //                               amax,
-  //                               scale_inv,
-  //                               otype);
+  // invoke TE function
+  at::Tensor output = cast_to_fp8(input,
+                                scale[0],
+                                amax[0][0],
+                                scale_inv[0],
+                                otype
+                                );
   return input.clone();
 }
 
