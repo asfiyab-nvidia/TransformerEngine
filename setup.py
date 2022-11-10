@@ -85,6 +85,7 @@ include_dirs = make_abs_path(include_dirs)
 pytorch_sources = [
     "transformer_engine/pytorch/csrc/extensions.cu",
     "transformer_engine/pytorch/csrc/common.cu",
+    "transformer_engine/pytorch/csrc/ts_fp8_op.cpp",
 ]
 pytorch_sources = make_abs_path(pytorch_sources)
 
@@ -121,16 +122,6 @@ ext_modules.append(
         cmake_path=os.path.join(path, "transformer_engine/common"),
         sources=[],
         include_dirs=include_dirs,
-    )
-)
-
-# add TorchScript op to the build
-ext_modules.append(
-    CppExtension(
-        name="torchscript_extension",
-        sources=["transformer_engine/pytorch/torchscript/te_custom_ops/custom_fp8_ops.cpp"],
-        include_dirs=include_dirs,
-        extra_compile_args=['-g'],
     )
 )
 

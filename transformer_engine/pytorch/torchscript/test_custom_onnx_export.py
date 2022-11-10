@@ -10,7 +10,7 @@ import te_onnx_extensions
 OPSET = 11
 
 # Load TS custom operator
-torch.ops.load_library("./build/lib.linux-x86_64-3.8/torchscript_extension.cpython-38-x86_64-linux-gnu.so")
+torch.ops.load_library("./build/lib.linux-x86_64-3.8/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so")
 
 
 class TestFP8_QDQ(nn.Module):
@@ -21,7 +21,6 @@ class TestFP8_QDQ(nn.Module):
         scale = 1.
         scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale
         # use the custom op loaded above
-        print(torch.ops.tex_ts.__dict__)
         ret = torch.ops.tex_ts.cast_to_fp8_ts(inp, scale)
         ret = torch.ops.tex_ts.cast_from_fp8_ts(ret)
         return ret
