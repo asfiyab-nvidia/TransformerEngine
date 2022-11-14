@@ -1,0 +1,40 @@
+## Export Transformer Engine Ops to ONNX
+
+The below instructions are for the following environment:
+1. Hopper environment obtained using crun. Additional mounting of scratch space is required
+2. Launch the latest NVIDIA PyTorch docker container
+
+Command to run from computelab-304 
+```bash
+# enter scratch space
+cd /home/scratch.asfiyab_sw/
+
+# request hopper machine
+/home/scratch.svc_compute_arch/release/crun/latest/crun/crun -q 'gpu_arch=Hopper' -i -img nvcr.io/nvidia/pytorch:22.09-py3 --args="-v $PWD:/scratch_space" -t 04:00:00
+```
+
+### Build Transformer Engine Extensions with Custom TorchScript operator
+
+Enable write permissions
+
+```bash
+sudo chown -R asfiyab.dip /opt/conda/lib/python3.8/site-packages/
+```
+
+Build TE
+```bash
+python setup.py install
+```
+
+The installed shared library with the TS op is located at: 
+```bash
+./build/lib.linux-x86_64-3.8/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so
+```
+
+NOTE that `pip install .` can also be used to build the TE library. However, you may encounter space issues. To avoid this, the installation is done within your scratch space. 
+
+### Run the ONNX export script
+
+```bash
+python onnx_export/test_custom_onnx_export.py
+```
