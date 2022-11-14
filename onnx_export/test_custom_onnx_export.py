@@ -18,11 +18,13 @@ class TestFP8_QDQ(nn.Module):
         super().__init__()
 
     def forward(self, inp):
+        # inputs to cast_to_fp8
         scale = 1.
         scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale
+        amax = torch.zeros(1, 1, dtype=torch.float32, device="cuda") * scale
+        scale_inv = torch.ones(1, dtype=torch.float32, device="cuda") * scale
         # use the custom op loaded above
-        ret = torch.ops.tex_ts.cast_to_fp8_ts(inp, scale)
-        ret = torch.ops.tex_ts.cast_from_fp8_ts(ret)
+        ret = torch.ops.tex_ts.cast_to_fp8_ts(inp, scale, amax, scale_inv)
         return ret
 
 
@@ -43,8 +45,10 @@ with torch.no_grad(), te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
                           "te.cast_fp8.onnx",
                           verbose=True,
                           opset_version=OPSET,
+                          input_names=["input"],# "scale", "amax", "scale_inv"],
+                          output_names=["output"],
                           #export_params=True,
                           #do_constant_folding=False,
                           operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
-                          custom_opsets={"tex": 2})
+                          custom_opsets={"tex_ts": 2})
 

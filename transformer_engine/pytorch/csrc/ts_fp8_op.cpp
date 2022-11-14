@@ -3,23 +3,24 @@
 
 // how to receive index
 at::Tensor cast_to_fp8_ts(const at::Tensor &input,
-                          const at::Tensor &scale
+                          const at::Tensor &scale,
+                          const at::Tensor &amax,
+                          const at::Tensor &scale_inv
                           )
 {
   // otype
+  // TE: Typically forward activations and weights require more precision,
+  // so E4M3 datatype is best used during forward pass (applies to ONNX export)
   transformer_engine::DType otype = transformer_engine::DType::kFloat8E4M3;
 
-  // amax
-  at::Tensor amax = at::zeros({1, 1}, at::device(at::kCUDA));
-
-  // scale_inv
-  at::Tensor scale_inv = at::ones_like(scale, at::device(at::kCUDA));
+  // this needs to be an input to the wrapper (see FP8FwdTensors)
+  int index = 0;
 
   // invoke TE function
   at::Tensor output = cast_to_fp8(input,
-                                scale[0],
-                                amax[0][0],
-                                scale_inv[0],
+                                scale[index],
+                                amax[0][index],
+                                scale_inv[index],
                                 otype
                                 );
   return output.clone();
