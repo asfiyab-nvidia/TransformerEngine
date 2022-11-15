@@ -1,24 +1,31 @@
 #include <torch/script.h>
 #include "extensions.h"
 
+transformer_engine::DType reverse_map_dtype(int64_t dtype)
+{
+  if (static_cast<int>(transformer_engine::DType::kFloat8E4M3) == dtype)
+    return transformer_engine::DType::kFloat8E4M3;
+  return transformer_engine::DType::kFloat8E5M2;
+}
+
 at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           const at::Tensor &scale,
                           const at::Tensor &amax,
                           const at::Tensor &scale_inv,
-                          int64_t fp8_tensor
+                          int64_t fp8_tensor,
+                          int64_t otype
                           )
 {
   // otype
-  // TE: Typically forward activations and weights require more precision,
-  // so E4M3 datatype is best used during forward pass (applies to ONNX export)
-  transformer_engine::DType otype = transformer_engine::DType::kFloat8E4M3;
+  transformer_engine::DType otype_arg = reverse_map_dtype(otype);
+  std::cout << "otype " << static_cast<int>(otype_arg) << std::endl;
 
   // invoke TE function
   at::Tensor output = cast_to_fp8(input,
                                 scale[fp8_tensor],
                                 amax[0][fp8_tensor],
                                 scale_inv[fp8_tensor],
-                                otype
+                                otype_arg
                                 );
   return output.clone();
 }

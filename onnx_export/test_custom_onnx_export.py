@@ -25,9 +25,10 @@ class TestFP8_QDQ(nn.Module):
         amax = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
         scale_inv = torch.ones(1, dtype=torch.float32, device="cuda") * scale
         fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT # Casting to Int happens internally
+        output_type = tex.DType.kFloat8E4M3
 
         # use the custom op loaded above
-        ret = torch.ops.tex_ts.cast_to_fp8_ts(inp, scale, amax, scale_inv, fp8_tensor)
+        ret = torch.ops.tex_ts.cast_to_fp8_ts(inp, scale, amax, scale_inv, fp8_tensor, output_type)
         return ret
 
 
