@@ -15,23 +15,23 @@ cd /home/scratch.asfiyab_sw/
 
 ### Build Transformer Engine Extensions with Custom TorchScript operator
 
-Enable write permissions
+#### Enable write permissions
 
 ```bash
 sudo chown -R asfiyab.dip /opt/conda/lib/python3.8/site-packages/
 ```
 
-Build TE
+#### Build TE
+To avoid running into space issues, perform the installation within your scratch space. To do this, create a build directory as done below and pass it to the `--target` flag during the pip install.
 ```bash
-python setup.py install
+mkdir build
+pip install . --target=build/ --upgrade
 ```
 
 The installed shared library with the TS op is located at: 
 ```bash
-./build/lib.linux-x86_64-3.8/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so
+./build/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so
 ```
-
-NOTE that `pip install .` can also be used to build the TE library. However, you may encounter space issues. To avoid this, the installation is done within your scratch space. 
 
 ### Run the ONNX export script
 

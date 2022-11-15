@@ -11,7 +11,7 @@ import te_onnx_extensions
 OPSET = 11
 
 # Load TS custom operator
-torch.ops.load_library("./build/lib.linux-x86_64-3.8/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so")
+torch.ops.load_library("./build/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so")
 
 
 class TestFP8_QDQ(nn.Module):
