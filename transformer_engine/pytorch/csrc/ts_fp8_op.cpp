@@ -3,7 +3,8 @@
 
 transformer_engine::DType reverse_map_dtype(int64_t dtype)
 {
-  if (static_cast<int>(transformer_engine::DType::kFloat8E4M3) == dtype)
+  // turn this into switch statement if more types need to be added
+  if (static_cast<int64_t>(transformer_engine::DType::kFloat8E4M3) == dtype)
     return transformer_engine::DType::kFloat8E4M3;
   return transformer_engine::DType::kFloat8E5M2;
 }
