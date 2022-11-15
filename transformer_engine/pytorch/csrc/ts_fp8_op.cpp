@@ -1,11 +1,11 @@
 #include <torch/script.h>
 #include "extensions.h"
 
-// how to receive index
 at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           const at::Tensor &scale,
                           const at::Tensor &amax,
-                          const at::Tensor &scale_inv
+                          const at::Tensor &scale_inv,
+                          int64_t fp8_tensor
                           )
 {
   // otype
@@ -13,14 +13,11 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
   // so E4M3 datatype is best used during forward pass (applies to ONNX export)
   transformer_engine::DType otype = transformer_engine::DType::kFloat8E4M3;
 
-  // this needs to be an input to the wrapper (see FP8FwdTensors)
-  int index = 0;
-
   // invoke TE function
   at::Tensor output = cast_to_fp8(input,
-                                scale[index],
-                                amax[0][index],
-                                scale_inv[index],
+                                scale[fp8_tensor],
+                                amax[0][fp8_tensor],
+                                scale_inv[fp8_tensor],
                                 otype
                                 );
   return output.clone();

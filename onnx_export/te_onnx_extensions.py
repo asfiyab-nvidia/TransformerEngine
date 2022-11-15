@@ -9,8 +9,8 @@ OPSET = 11
 
 
 # Asfiya TODO: add scale argument and do a proper export w/ all fields.
-@symbolic_helper.parse_args("v", "v", "v", "v")
-def onnx_cast_to_fp8(g, input, scale, amax, scale_inv):
+@symbolic_helper.parse_args("v", "v", "v", "v", "i")
+def onnx_cast_to_fp8(g, input, scale, amax, scale_inv, fp8_tensor):
     return g.op("TRT_FP8DequantizeLinear", g.op("TRT_FP8QuantizeLinear", input, scale), scale)
 
 @symbolic_helper.parse_args("v")
