@@ -3,9 +3,26 @@
 
 transformer_engine::DType reverse_map_dtype(int64_t dtype)
 {
-  // turn this into switch statement if more types need to be added
-  if (static_cast<int64_t>(transformer_engine::DType::kFloat8E4M3) == dtype)
-    return transformer_engine::DType::kFloat8E4M3;
+  switch (dtype)
+  {
+    case static_cast<int64_t>(transformer_engine::DType::kByte):
+        return transformer_engine::DType::kByte;
+    case static_cast<int64_t>(transformer_engine::DType::kInt32):
+        return transformer_engine::DType::kInt32;
+    case static_cast<int64_t>(transformer_engine::DType::kFloat32):
+        return transformer_engine::DType::kFloat32;
+    case static_cast<int64_t>(transformer_engine::DType::kFloat16):
+        return transformer_engine::DType::kFloat16;
+    case static_cast<int64_t>(transformer_engine::DType::kBFloat16):
+        return transformer_engine::DType::kBFloat16;
+    case static_cast<int64_t>(transformer_engine::DType::kFloat8E4M3):
+        return transformer_engine::DType::kFloat8E4M3;
+    case static_cast<int64_t>(transformer_engine::DType::kFloat8E5M2):
+        return transformer_engine::DType::kFloat8E5M2;
+    default:
+        std::cout<<"Invalid input argument\n";
+        break;
+  }
   return transformer_engine::DType::kFloat8E5M2;
 }
 
@@ -18,7 +35,6 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
 {
   // otype
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
-  std::cout << "otype " << static_cast<int>(otype_arg) << std::endl;
 
   // invoke TE function
   at::Tensor output = cast_to_fp8(input,
@@ -30,11 +46,23 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
   return output.clone();
 }
 
-torch::Tensor cast_from_fp8_ts(torch::Tensor X)
+at::Tensor cast_from_fp8_ts(const at::Tensor &input,
+                              const at::Tensor &scale_inv,
+                              int64_t itype,
+                              int64_t otype)
 {
-  // Should invoke: texcpp.cast_to_fp8(inp, meta, tex.FP8FwdTensors.GEMM1_INPUT, fp8_type)
-  // should it? Or should it just call cast_from_fp8() from the c++ def? why do we go python->c++->python->c++
-  return X.clone();
+  // itype
+  transformer_engine::DType itype_arg = reverse_map_dtype(itype);
+  // otype
+  transformer_engine::DType otype_arg = reverse_map_dtype(otype);
+
+  // invoke TE function
+  at::Tensor output = cast_from_fp8(input,
+                                  scale_inv,
+                                  itype_arg,
+                                  otype_arg
+                                );
+  return output.clone();
 }
 
 // first arg here defines the namespace where the op is registered
