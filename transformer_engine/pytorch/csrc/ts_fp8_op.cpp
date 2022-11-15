@@ -13,7 +13,6 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           const at::Tensor &scale,
                           const at::Tensor &amax,
                           const at::Tensor &scale_inv,
-                          int64_t fp8_tensor,
                           int64_t otype
                           )
 {
@@ -23,9 +22,9 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
 
   // invoke TE function
   at::Tensor output = cast_to_fp8(input,
-                                scale[fp8_tensor],
-                                amax[0][fp8_tensor],
-                                scale_inv[fp8_tensor],
+                                scale,
+                                amax,
+                                scale_inv,
                                 otype_arg
                                 );
   return output.clone();

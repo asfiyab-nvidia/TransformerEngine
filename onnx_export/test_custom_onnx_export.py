@@ -20,15 +20,24 @@ class TestFP8_QDQ(nn.Module):
 
     def forward(self, inp):
         # inputs to cast_to_fp8
-        scale = 1.
-        scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale
-        amax = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
-        scale_inv = torch.ones(1, dtype=torch.float32, device="cuda") * scale
+        scale_factor = 1.
         fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT # Casting to Int happens internally
+
+        meta = tex.FP8TensorMeta()
+        meta.scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
+        meta.amax_history = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
+        meta.scale_inv = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
         output_type = tex.DType.kFloat8E4M3
 
-        # use the custom op loaded above
-        ret = torch.ops.tex_ts.cast_to_fp8_ts(inp, scale, amax, scale_inv, fp8_tensor, output_type)
+        scale = meta.scale[fp8_tensor]
+        amax_history = meta.amax_history[0][fp8_tensor]
+        scale_inv = meta.scale_inv[fp8_tensor]
+        ret = torch.ops.tex_ts.cast_to_fp8_ts(inp,
+                                            meta.scale,
+                                            meta.amax_history,
+                                            meta.scale_inv,
+                                            output_type)
+
         return ret
 
 
