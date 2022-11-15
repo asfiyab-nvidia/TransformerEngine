@@ -25,13 +25,20 @@ sudo chown -R asfiyab.dip /opt/conda/lib/python3.8/site-packages/
 To avoid running into space issues, perform the installation within your scratch space. To do this, create a build directory as done below and pass it to the `--target` flag during the pip install.
 ```bash
 mkdir build
-pip install . --target=build/ --upgrade
+pip install -e . --target=build/ --upgrade
+
+export PYTHONPATH=$PYTHONPATH:$PWD
+
+# verify pip sets TE directory to PWD
+pip show transformer_engine
 ```
 
 The installed shared library with the TS op is located at: 
 ```bash
 ./build/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so
 ```
+
+However, we do not need to load it explicitly anymore. Building it with the TE extensions enables us to load the transformer engine extensions and call it using `torch.ops.<namespace>.<function_name>`
 
 ### Run the ONNX export script
 
