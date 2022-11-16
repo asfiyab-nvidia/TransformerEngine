@@ -65,9 +65,45 @@ at::Tensor cast_from_fp8_ts(const at::Tensor &input,
   return output.clone();
 }
 
+std::vector<at::Tensor> layernorm_fwd_fp8_ts(const at::Tensor &input,
+                                const at::Tensor &weight,
+                                const at::Tensor &bias,
+                                double eps,
+                                at::Tensor scale,
+                                at::Tensor amax,
+                                at::Tensor scale_inv,
+                                int64_t otype)
+{
+  // otype
+  transformer_engine::DType otype_arg = reverse_map_dtype(otype);
+
+  //eps
+  float eps_float = (float) eps;
+
+  // output is a vector of 3 tensors:
+  // 64x64 byte type
+  // 64 float type
+  // 64 float type
+  std::vector<at::Tensor> output = layernorm_fwd_fp8(input,
+                                                    weight,
+                                                    bias,
+                                                    eps_float,
+                                                    scale,
+                                                    amax,
+                                                    scale_inv,
+                                                    otype_arg
+                                                    );
+
+  std::vector<at::Tensor> output_copy;
+  copy(output.begin(), output.end(), back_inserter(output_copy));
+
+  return output_copy;
+}
+
 // first arg here defines the namespace where the op is registered
 TORCH_LIBRARY(tex_ts, m)
 {
   m.def("cast_to_fp8_ts", &cast_to_fp8_ts);
   m.def("cast_from_fp8_ts", &cast_from_fp8_ts);
+  m.def("layernorm_fwd_fp8_ts", &layernorm_fwd_fp8_ts);
 }
