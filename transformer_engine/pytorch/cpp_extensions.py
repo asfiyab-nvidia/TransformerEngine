@@ -41,7 +41,7 @@ def fp8_gemm(
 
     out_dtype = tex.DType.kFloat32 if fp32_output else TE_DType[out_dtype]
 
-    tex.te_gemm(
+    output_tensor = torch.ops.tex_ts.te_gemm_ts(
         A,
         A_scale_inv,
         A_dtype,
@@ -62,7 +62,7 @@ def fp8_gemm(
     )
 
     if return_output:
-        return out
+        return output_tensor
     return None
 
 
