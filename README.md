@@ -42,6 +42,15 @@ However, we do not need to load it explicitly anymore. Building it with the TE e
 
 ### Run the ONNX export script
 
+Usage:
+
 ```bash
-python onnx_export/test_custom_onnx_export.py
+# test fp8 path
+python onnx_export/test_te_gemm_export.py --fp8
+
+# test non-fp8 path with bias
+python onnx_export/test_te_gemm_export.py
+
+# test non-fp8 path with gelu
+python onnx_export/test_te_gemm_export.py --test_gelu
 ```
