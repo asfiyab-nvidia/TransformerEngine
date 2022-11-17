@@ -51,7 +51,8 @@ def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_type, trans_weight,
 
     #TO DO: ONNX doesn't have gelu
     if (pre_gelu_out.node().kind() != "onnx::Constant" and bias.node().kind() != "onnx::Constant"):
-        out = g.op('TRT_Gelu', out, pre_gelu_out)
+        # out = g.op('TRT_Gelu', out, pre_gelu_out)
+        out = torch.onnx.symbolic_opset9.gelu(g, out)
     return out
 
 register_custom_op_symbolic('tex_ts::cast_to_fp8_ts', onnx_cast_to_fp8, OPSET)
