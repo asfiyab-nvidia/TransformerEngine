@@ -4,6 +4,7 @@
 
 import torch
 from torch.onnx import symbolic_helper, register_custom_op_symbolic
+import transformer_engine_extensions as tex
 
 OPSET = 11
 
@@ -32,15 +33,26 @@ def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_type, trans_weight,
                       workspaceSize,
                       accumulate,
                       use_split_accumulator):
-    # put DQ in front of input
-    inp_dq = g.op("TRT_FP8DequantizeLinear", input, input_scale_inverse)
+    if input_type == int(tex.DType.kFloat8E4M3):
+        # add DQ
+        input = g.op("TRT_FP8DequantizeLinear", input, input_scale_inverse)
 
-    # put DQ in front of weights
-    weight_dq = g.op("TRT_FP8DequantizeLinear", weight, weight_scale_inverse)
+    if weight_type == int(tex.DType.kFloat8E4M3):
+        # add DQ
+        weight = g.op("TRT_FP8DequantizeLinear", weight, weight_scale_inverse)
 
     # call gemm op from onnx with trans_weight and trans_input as attributes
     # order specified with Gemm op defined as A x B
-    return g.op("Gemm", inp_dq, weight_dq, transposeA_i=trans_input, transposeB_i=trans_weight)
+    out = g.op("Gemm", input, weight, transposeA_i=trans_input, transposeB_i=trans_weight)
+
+    #TO DO: better way to check empty tensors
+    if (pre_gelu_out.node().kind() == "onnx::Constant" and bias.node().kind() != "onnx::Constant"):
+        out = g.op('Add', out, bias)
+
+    #TO DO: ONNX doesn't have gelu
+    if (pre_gelu_out.node().kind() != "onnx::Constant" and bias.node().kind() != "onnx::Constant"):
+        out = g.op('TRT_Gelu', out, pre_gelu_out)
+    return out
 
 register_custom_op_symbolic('tex_ts::cast_to_fp8_ts', onnx_cast_to_fp8, OPSET)
 register_custom_op_symbolic('tex_ts::cast_from_fp8_ts', onnx_cast_from_fp8, OPSET)

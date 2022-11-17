@@ -87,14 +87,14 @@ at::Tensor te_gemm_ts(at::Tensor A,
 {
   // cast inputs to types accepted by te_gemm
   transformer_engine::DType A_type_arg = reverse_map_dtype(A_type);
-  bool transa_arg = (bool) transa;
+  bool transa_arg = static_cast<bool>(transa);
   transformer_engine::DType B_type_arg = reverse_map_dtype(B_type);
-  bool transb_arg = (bool) transb;
+  bool transb_arg = static_cast<bool>(transb);
   transformer_engine::DType D_type_arg = reverse_map_dtype(D_type);
-  bool grad_arg = (bool) grad;
-  size_t workspaceSize_arg = (size_t) workspaceSize;
-  bool accumulate_arg = (bool) accumulate;
-  bool use_split_accumulator_arg = (bool) use_split_accumulator;
+  bool grad_arg = static_cast<bool>(grad);
+  size_t workspaceSize_arg = static_cast<size_t>(workspaceSize);
+  bool accumulate_arg = static_cast<bool>(accumulate);
+  bool use_split_accumulator_arg = static_cast<bool>(use_split_accumulator);
 
   te_gemm(A,
           A_scale_inverse,
@@ -114,7 +114,7 @@ at::Tensor te_gemm_ts(at::Tensor A,
           accumulate_arg,
           use_split_accumulator_arg
           );
-  return D.clone();
+  return D;
 }
 
 // first arg here defines the namespace where the op is registered
