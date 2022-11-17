@@ -45,13 +45,14 @@ def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_type, trans_weight,
     # order specified with Gemm op defined as A x B
     out = g.op("Gemm", input, weight, transposeA_i=trans_input, transposeB_i=trans_weight)
 
+    bias_empty = bias.node().kind() == "onnx::Constant"
+    pre_gelu_out_empty = pre_gelu_out.node().kind() == "onnx::Constant"
     #TO DO: better way to check empty tensors
-    if (pre_gelu_out.node().kind() == "onnx::Constant" and bias.node().kind() != "onnx::Constant"):
+    if not bias_empty:
         out = g.op('Add', out, bias)
 
     #TO DO: ONNX doesn't have gelu
-    if (pre_gelu_out.node().kind() != "onnx::Constant" and bias.node().kind() != "onnx::Constant"):
-        # out = g.op('TRT_Gelu', out, pre_gelu_out)
+    if not pre_gelu_out_empty:
         out = torch.onnx.symbolic_opset9.gelu(g, out)
     return out
 

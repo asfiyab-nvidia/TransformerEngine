@@ -1,12 +1,13 @@
 # Use this code with Nvidia's pytorch container which contains
 # preinstallted torch and transformer engine.
 
+import argparse
 import torch
 from torch import nn as nn
 import transformer_engine.pytorch as te
 from transformer_engine.common import recipe
 import transformer_engine_extensions as tex
-from transformer_engine.pytorch.cpp_extensions import cast_to_fp8, cast_from_fp8, fp8_gemm
+from transformer_engine.pytorch.cpp_extensions import cast_to_fp8, fp8_gemm, gemm
 from transformer_engine.pytorch.module import get_workspace
 import te_onnx_extensions
 
@@ -18,6 +19,8 @@ in_features = 64
 out_features = 128
 hidden_size = 256
 
+# Export to ONNX
+fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.E4M3)
 
 class TestFP8_GEMM(nn.Module):
     def __init__(self):
@@ -77,25 +80,70 @@ class TestFP8_GEMM(nn.Module):
 
         return ret
 
+class Test_GEMM(nn.Module):
+    def __init__(self, test_gelu=False):
+        super().__init__()
+        self.test_gelu = test_gelu
 
-# Export to ONNX
-fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.E4M3)
-inp = torch.randn(hidden_size, in_features, device="cuda")
-weight = torch.randn(out_features, in_features, device="cuda")
+    def forward(self, inp, weight):
+        bias_size = out_features
+        outp_type = torch.float32
 
-with torch.inference_mode(), te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-        model = TestFP8_GEMM()
-        output = model(inp, weight)
-        print(output.shape)
-        torch.onnx.export(model,
-                          (inp, weight),
-                          "te.fp8_gemm.onnx",
-                          verbose=True,
-                          opset_version=OPSET,
-                          input_names=["input", "weight"],
-                          output_names=["output"],
-                          #export_params=True,
-                          do_constant_folding=True,
-                          operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
-                          custom_opsets={"tex_ts": 2})
+        bias = torch.randn(bias_size, dtype=torch.float32, device="cuda")
+        gelu_input = torch.randn(hidden_size, out_features, dtype=torch.float32, device="cuda")
+        # note: due to logic in lines 104:116 and L129 in cpp_extensions.py
+        # it appears either bias OR gelu can be activated, not both
+        grad = True if self.test_gelu else False
+        ret, _, _ = gemm(
+            weight,
+            inp,
+            outp_type,
+            get_workspace(),
 
+            # test bias
+            bias=bias,
+            use_bias=True,
+
+            # test gelu
+            gelu=True,
+            gelu_input=gelu_input,
+            grad=grad
+        )
+
+        return ret
+
+
+
+def export(model, onnx_file_name):
+    inp = torch.randn(hidden_size, in_features, device="cuda")
+    weight = torch.randn(out_features, in_features, device="cuda")
+    with torch.inference_mode(), te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
+            output = model(inp, weight)
+            print(output.shape)
+            torch.onnx.export(model,
+                            (inp, weight),
+                            onnx_file_name,
+                            verbose=True,
+                            opset_version=OPSET,
+                            input_names=["input", "weight"],
+                            output_names=["output"],
+                            #export_params=True,
+                            do_constant_folding=True,
+                            operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK,
+                            custom_opsets={"tex_ts": 2})
+
+# Initialize parser
+parser = argparse.ArgumentParser()
+parser.add_argument('--fp8', action='store_true', help="Export FP8 model")
+parser.add_argument('--test_gelu', action='store_true', help="test gelu op in non-fp8 model")
+args = parser.parse_args()
+
+if args.fp8:
+    model_fp8 = TestFP8_GEMM()
+    export(model_fp8, "te.fp8_gemm.onnx")
+else:
+    test_gelu=False
+    if args.test_gelu:
+        test_gelu=True
+    model_non_fp8 = Test_GEMM(test_gelu)
+    export(model_non_fp8, "te.non_fp8_gemm.onnx")

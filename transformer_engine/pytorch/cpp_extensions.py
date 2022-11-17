@@ -115,7 +115,7 @@ def gemm(
 
     bias = bias if use_bias else empty_tensor
 
-    tex.te_gemm(
+    output_tensor = torch.ops.tex_ts.te_gemm_ts(
         A,
         empty_tensor,
         input_dtype,
@@ -136,7 +136,7 @@ def gemm(
     )
 
     if return_output:
-        return out, grad_bias, gelu_input
+        return output_tensor, grad_bias, gelu_input
     return None, grad_bias, gelu_input
 
 
