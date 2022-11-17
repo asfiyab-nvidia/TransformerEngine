@@ -8,6 +8,8 @@ import torch
 import transformer_engine_extensions as tex
 from .constants import TE_DType
 
+# load transformer_engine_extensions library
+torch.ops.load_library("./build/transformer_engine_extensions.cpython-38-x86_64-linux-gnu.so")
 
 def fp8_gemm(
     A: torch.Tensor,
