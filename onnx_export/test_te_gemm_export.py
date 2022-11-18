@@ -118,8 +118,6 @@ def export(model, onnx_file_name):
     inp = torch.randn(hidden_size, in_features, device="cuda")
     weight = torch.randn(out_features, in_features, device="cuda")
     with torch.inference_mode(), te.fp8_autocast(enabled=True, fp8_recipe=fp8_recipe):
-            output = model(inp, weight)
-            print(output.shape)
             torch.onnx.export(model,
                             (inp, weight),
                             onnx_file_name,
@@ -142,8 +140,5 @@ if args.fp8:
     model_fp8 = TestFP8_GEMM()
     export(model_fp8, "te.fp8_gemm.onnx")
 else:
-    test_gelu=False
-    if args.test_gelu:
-        test_gelu=True
-    model_non_fp8 = Test_GEMM(test_gelu)
+    model_non_fp8 = Test_GEMM(args.test_gelu)
     export(model_non_fp8, "te.non_fp8_gemm.onnx")
