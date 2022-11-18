@@ -67,9 +67,28 @@ at::Tensor cast_from_fp8_ts(const at::Tensor &input,
   return output.clone();
 }
 
+at::Tensor fp8_gelu_ts(at::Tensor input,
+                      at::Tensor scale,
+                      at::Tensor amax,
+                      at::Tensor scale_inv,
+                      int64_t fp8_tensor,
+                      int64_t otype
+                      )
+{
+  transformer_engine::DType otype_arg = reverse_map_dtype(otype);
+  at::Tensor output = fp8_gelu(input,
+                                scale[fp8_tensor],
+                                amax[0][fp8_tensor],
+                                scale_inv[fp8_tensor],
+                                otype_arg
+                                );
+  return output;
+}
+
 // first arg here defines the namespace where the op is registered
 TORCH_LIBRARY(tex_ts, m)
 {
   m.def("cast_to_fp8_ts", &cast_to_fp8_ts);
   m.def("cast_from_fp8_ts", &cast_from_fp8_ts);
+  m.def("fp8_gelu_ts", &fp8_gelu_ts);
 }

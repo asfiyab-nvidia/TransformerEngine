@@ -213,11 +213,12 @@ def fp8_gelu(
     otype: tex.DType,
 ) -> torch.Tensor:
     """GeLU with FP8 output"""
-    return tex.fp8_gelu(
+    return torch.ops.tex_ts.fp8_gelu_ts(
         inp,
-        fp8_meta_tensor.scale[fp8_tensor],
-        fp8_meta_tensor.amax_history[0][fp8_tensor],
-        fp8_meta_tensor.scale_inv[fp8_tensor],
+        fp8_meta_tensor.scale,
+        fp8_meta_tensor.amax_history,
+        fp8_meta_tensor.scale_inv,
+        fp8_tensor,
         otype,
     )
 
