@@ -26,6 +26,7 @@ transformer_engine::DType reverse_map_dtype(int64_t dtype)
   return transformer_engine::DType::kFloat8E5M2;
 }
 
+
 at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           const at::Tensor &scale,
                           const at::Tensor &amax,
@@ -65,7 +66,7 @@ at::Tensor cast_from_fp8_ts(const at::Tensor &input,
   return output.clone();
 }
 
-std::vector<at::Tensor> layernorm_fwd_fp8_ts(const at::Tensor &input,
+at::Tensor layernorm_fwd_fp8_ts(const at::Tensor &input,
                                 const at::Tensor &weight,
                                 const at::Tensor &bias,
                                 double eps,
@@ -84,20 +85,17 @@ std::vector<at::Tensor> layernorm_fwd_fp8_ts(const at::Tensor &input,
   // 64x64 byte type
   // 64 float type
   // 64 float type
-  std::vector<at::Tensor> output = layernorm_fwd_fp8(input,
-                                                    weight,
-                                                    bias,
-                                                    eps_float,
-                                                    scale,
-                                                    amax,
-                                                    scale_inv,
-                                                    otype_arg
-                                                    );
+  std::vector<at::Tensor> output = layernorm_fwd_fp8(
+    input,
+    weight,
+    bias,
+    eps_float,
+    scale,
+    amax,
+    scale_inv,
+    otype_arg);
 
-  std::vector<at::Tensor> output_copy;
-  copy(output.begin(), output.end(), back_inserter(output_copy));
-
-  return output_copy;
+  return output[0];
 }
 
 // first arg here defines the namespace where the op is registered

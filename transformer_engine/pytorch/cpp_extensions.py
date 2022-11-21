@@ -233,6 +233,7 @@ def layernorm_fwd_fp8(
     otype: tex.DType,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """LayerNorm with FP8 output"""
+
     return tex.layernorm_fwd_fp8(
         inp,
         weight,
@@ -243,6 +244,33 @@ def layernorm_fwd_fp8(
         fp8_meta_tensor.scale_inv[fp8_tensor],
         otype,
     )
+
+
+def layernorm_fwd_fp8_inf(
+    inp: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    eps: float,
+    fp8_meta_tensor: tex.FP8TensorMeta,
+    fp8_tensor: Union[tex.FP8FwdTensors, tex.FP8BwdTensors],
+    otype: tex.DType,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """LayerNorm with FP8 output.
+
+    This version of layernorm_fwd_fp8 is specialized for inference, and returns
+    only the normalized output.
+    """
+
+    ret = torch.ops.tex_ts.layernorm_fwd_fp8_ts(
+        inp,
+        weight,
+        bias,
+        eps,
+        fp8_meta_tensor.scale,
+        fp8_meta_tensor.amax_history,
+        fp8_meta_tensor.scale_inv,
+        otype)
+    return ret
 
 
 def cast_to_fp8(
