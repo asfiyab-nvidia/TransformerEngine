@@ -81,9 +81,8 @@ class TestFP8_GEMM(nn.Module):
         return ret
 
 class Test_GEMM(nn.Module):
-    def __init__(self, test_gelu=False):
+    def __init__(self):
         super().__init__()
-        self.test_gelu = test_gelu
 
     def forward(self, inp, weight):
         bias_size = out_features
@@ -93,7 +92,6 @@ class Test_GEMM(nn.Module):
         gelu_input = torch.randn(hidden_size, out_features, dtype=torch.float32, device="cuda")
         # note: due to logic in lines 104:116 and L129 in cpp_extensions.py
         # it appears either bias OR gelu can be activated, not both
-        grad = True if self.test_gelu else False
         ret, _, _ = gemm(
             weight,
             inp,
@@ -107,7 +105,7 @@ class Test_GEMM(nn.Module):
             # test gelu
             gelu=True,
             gelu_input=gelu_input,
-            grad=grad
+            grad=False # only True for backward pass
         )
 
         return ret
@@ -133,12 +131,11 @@ def export(model, onnx_file_name):
 # Initialize parser
 parser = argparse.ArgumentParser()
 parser.add_argument('--fp8', action='store_true', help="Export FP8 model")
-parser.add_argument('--test_gelu', action='store_true', help="test gelu op in non-fp8 model")
 args = parser.parse_args()
 
 if args.fp8:
     model_fp8 = TestFP8_GEMM()
     export(model_fp8, "te.fp8_gemm.onnx")
 else:
-    model_non_fp8 = Test_GEMM(args.test_gelu)
+    model_non_fp8 = Test_GEMM()
     export(model_non_fp8, "te.non_fp8_gemm.onnx")
