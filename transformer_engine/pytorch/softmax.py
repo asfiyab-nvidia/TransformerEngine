@@ -45,6 +45,13 @@ class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
 
         return input_grads, None
 
+    @staticmethod
+    def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Value:
+        scale_input = g.op("Constant", value_t=torch.tensor(scale, dtype=torch.float))
+        scaled = g.op("Mul", input, scale_input)
+        masked = g.op("Trilu", scaled, upper_i=1)
+        return g.op("Softmax", masked)
+
 
 class ScaledMaskedSoftmax(torch.autograd.Function):
     """
@@ -81,6 +88,12 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
         )
         return input_grads, None, None
 
+    @staticmethod
+    def symbolic(g: torch.Graph, input: torch.Tensor, mask: torch.Tensor, scale: float) -> torch.Value:
+        scale_input = g.op("Constant", value_t=torch.tensor(scale, dtype=torch.float))
+        scaled = g.op("Mul", input, scale_input)
+        masked = g.op("Mul", scaled, mask)
+        return g.op("Softmax", masked)
 
 class ScaledSoftmax(torch.autograd.Function):
     """
@@ -113,6 +126,12 @@ class ScaledSoftmax(torch.autograd.Function):
             output_grads, softmax_results, scale_t[0]
         )
         return input_grads, None, None
+
+    @staticmethod
+    def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Value:
+        scale_input = g.op("Constant", value_t=torch.tensor(scale, dtype=torch.float))
+        scaled = g.op("Mul", input, scale_input)
+        return g.op("Softmax", scaled)
 
 
 class FusedScaleMaskSoftmax(nn.Module):
