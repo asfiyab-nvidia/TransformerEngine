@@ -1290,17 +1290,18 @@ class _Linear(torch.autograd.Function):
                 use_bias=use_bias,
             )
 
-        ctx.save_for_backward(
-            inputmat_no_fp8
-            if not fp8 or fp8_meta["recipe"].override_linear_precision.wgrad
-            else None,
-            inputmat_t
-            if fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
-            else None,
-            weight,
-            weight_t_fp8,
-            fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
-        )
+        if is_training:
+            ctx.save_for_backward(
+                inputmat_no_fp8
+                if not fp8 or fp8_meta["recipe"].override_linear_precision.wgrad
+                else None,
+                inputmat_t
+                if fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
+                else None,
+                weight,
+                weight_t_fp8,
+                fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
+            )
         ctx.activation_dtype = activation_dtype
         ctx.fp8 = fp8
         ctx.fp8_meta = fp8_meta
