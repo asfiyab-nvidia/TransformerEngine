@@ -313,6 +313,23 @@ std::vector<at::Tensor> layernorm_fwd_fp8(const at::Tensor &input,
 }
 
 
+at::Tensor layernorm_fwd_fp8_inf(const at::Tensor &input,
+                                 const at::Tensor &weight,
+                                 const at::Tensor &bias,
+                                 float eps,
+                                 at::Tensor scale,
+                                 at::Tensor amax,
+                                 at::Tensor scale_inv,
+                                 transformer_engine::DType otype
+){
+    // This is a specialized version of layernorm_fwd_fp8, optimized for inference,
+    // which only returns the normalized output.
+    std::vector<at::Tensor> out = layernorm_fwd_fp8(
+      input, weight, bias, eps, scale, amax, scale_inv, otype);
+    return out[0];
+}
+
+
 std::vector<at::Tensor> layernorm_fwd(const at::Tensor &input,
                                       const at::Tensor &weight,
                                       const at::Tensor &bias,

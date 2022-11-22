@@ -8,6 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import Union, Optional, Callable, Tuple, Dict, List, Any
 from functools import partial
+from torch import functional as F
 
 import torch
 from torch.nn.parameter import Parameter
@@ -62,6 +63,7 @@ from .cpp_extensions import (
     fp8_gelu,
     fp8_cast_transpose_bgrad_dgelu_fused,
     layernorm_fwd_fp8,
+    layernorm_fwd_fp8_inf,
     cast_to_fp8,
     cast_from_fp8,
 )
@@ -459,13 +461,13 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
                     fp8_dtype_backward,
                 )
             else:
+                grad_output_t = None
                 grad_output_c = cast_to_fp8(
                     grad_output_mat,
                     ctx.fp8_meta["scaling_bwd"],
                     tex.FP8BwdTensors.GRAD_OUTPUT1,
                     fp8_dtype_backward,
                 )
-                grad_output_t = None
             grad_bias = None
 
         return grad_output_mat, grad_output_c, grad_output_t, grad_bias
@@ -502,7 +504,9 @@ class _LayerNormLinear(torch.autograd.Function):
         activation_dtype: torch.dtype,
         parallel_mode: Union[str, None],
         return_layernorm_output: bool,
+        is_training: bool
     ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
+
         # Make sure input dimensions are compatible
         in_features = ln_weight.numel()
         assert inp.shape[-1] == in_features, "GEMM not possible"
@@ -522,19 +526,37 @@ class _LayerNormLinear(torch.autograd.Function):
             fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
 
             if not return_layernorm_output:
-                ln_out, mu, rsigma = layernorm_fwd_fp8(
-                    inputmat,
-                    ln_weight,
-                    ln_bias,
-                    eps,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
-                    fp8_dtype_forward,
-                )
+                if is_training:
+                    ln_out, mu, rsigma = layernorm_fwd_fp8(
+                        inputmat,
+                        ln_weight,
+                        ln_bias,
+                        eps,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
+                else:
+                    mu = rsigma = None
+                    ln_out = layernorm_fwd_fp8_inf(
+                        inputmat,
+                        ln_weight,
+                        ln_bias,
+                        eps,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
             else:
-                ln_out_return, mu, rsigma = tex.layernorm_fwd(
-                    inputmat, ln_weight, ln_bias, eps
-                )
+                if is_training:
+                    ln_out_return, mu, rsigma = tex.layernorm_fwd(
+                        inputmat, ln_weight, ln_bias, eps
+                    )
+                else:
+                    ln_out_return, mu, rsigma = F.layer_norm(
+                        inputmat, ln_weight, ln_bias, eps
+                    ), None, None
+
                 ln_out = cast_to_fp8(
                     ln_out_return,
                     fp8_meta["scaling_fwd"],
@@ -542,7 +564,12 @@ class _LayerNormLinear(torch.autograd.Function):
                     fp8_dtype_forward,
                 )
         else:
-            ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
+            if is_training:
+                ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
+            else:
+                    ln_out_return, mu, rsigma = F.layer_norm(
+                        inputmat, ln_weight, ln_bias, eps
+                    ), None, None
             ln_out_return = ln_out
 
         # Column Parallel Linear
@@ -560,14 +587,22 @@ class _LayerNormLinear(torch.autograd.Function):
             bias = cast_if_needed(bias, bias_dtype) if use_bias else bias
 
             if update_fp8_weights:
-                fp8_cast_transpose_fused(
-                    weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=weight_fp8,
-                    transpose_out=weight_t_fp8,
-                )
+                if is_training:
+                    fp8_cast_transpose_fused(
+                        weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=weight_fp8,
+                        transpose_out=weight_t_fp8,
+                    )
+                else:
+                    weight_t_fp8 = None
+                    weight_fp8 = cast_to_fp8(
+                        weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward)
 
             out = fp8_gemm(
                 weight_fp8,
@@ -812,6 +847,7 @@ class _LayerNormLinear(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )
 
 
@@ -1032,7 +1068,6 @@ class LayerNormLinear(TransformerEngineBaseModule):
         self.pre_forward(inp)
 
         bias_tensor = bias if bias is not None else self.bias
-
         out = _LayerNormLinear.apply(
             inp,
             self.layer_norm_weight,
@@ -1053,6 +1088,7 @@ class LayerNormLinear(TransformerEngineBaseModule):
             self.activation_dtype,
             self.parallel_mode,
             self.return_layernorm_output,
+            self.training,
         )
 
         self.post_forward()
@@ -1095,6 +1131,7 @@ class _Linear(torch.autograd.Function):
         tensor_parallel: bool,
         activation_dtype: torch.dtype,
         parallel_mode: Union[str, None],
+        is_training: bool,
     ) -> torch.Tensor:
         # Make sure input dimensions are compatible
         in_features = weight.shape[-1]
@@ -1111,19 +1148,27 @@ class _Linear(torch.autograd.Function):
             fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
 
             if not fp8_meta["recipe"].override_linear_precision.wgrad:
-                inputmat, inputmat_t = fp8_cast_transpose_fused(
-                    inputmat,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
-                    fp8_dtype_forward,
-                )
+                if is_training:
+                    inputmat, inputmat_t = fp8_cast_transpose_fused(
+                        inputmat,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
+                else:
+                    inputmat = cast_to_fp8(
+                        inputmat,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
             else:
-                inputmat = cast_to_fp8(
+                inputmat, inputmat_t = cast_to_fp8(
                     inputmat,
                     fp8_meta["scaling_fwd"],
                     tex.FP8FwdTensors.GEMM1_INPUT,
                     fp8_dtype_forward,
-                )
+                ), None
 
         # Column Parallel Linear
         if parallel_mode == "column" and sequence_parallel:
@@ -1140,14 +1185,23 @@ class _Linear(torch.autograd.Function):
             bias = cast_if_needed(bias, bias_dtype) if use_bias else bias
 
             if update_fp8_weights:
-                fp8_cast_transpose_fused(
-                    weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=weight_fp8,
-                    transpose_out=weight_t_fp8,
-                )
+                if is_training:
+                    fp8_cast_transpose_fused(
+                        weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=weight_fp8,
+                        transpose_out=weight_t_fp8,
+                    )
+                else:
+                    weight_t_fp8 = None
+                    weight_fp8 = cast_to_fp8(
+                        weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                    )
 
             out = fp8_gemm(
                 weight_fp8,
@@ -1367,6 +1421,7 @@ class _Linear(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )
 
 
@@ -1575,6 +1630,7 @@ class Linear(TransformerEngineBaseModule):
             self.tp_size > 1,
             self.activation_dtype,
             self.parallel_mode,
+            self.training,
         )
 
         self.post_forward()
@@ -1619,6 +1675,7 @@ class _LayerNormMLP(torch.autograd.Function):
         return_layernorm_output: bool,
         bias_gelu_nvfusion: bool,
         set_parallel_mode: bool,
+        is_training: bool
     ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
         # Make sure input dimensions are compatible
         in_features = ln_weight.numel()
@@ -1638,15 +1695,26 @@ class _LayerNormMLP(torch.autograd.Function):
         if fp8:
             fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
             if not return_layernorm_output:
-                ln_out, mu, rsigma = layernorm_fwd_fp8(
-                    inputmat,
-                    ln_weight,
-                    ln_bias,
-                    eps,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
-                    fp8_dtype_forward,
-                )
+                if is_training:
+                    ln_out, mu, rsigma = layernorm_fwd_fp8(
+                        inputmat,
+                        ln_weight,
+                        ln_bias,
+                        eps,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
+                else:
+                    ln_out, mu, rsigma = layernorm_fwd_fp8_inf(
+                        inputmat,
+                        ln_weight,
+                        ln_bias,
+                        eps,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
             else:
                 ln_out_return, mu, rsigma = tex.layernorm_fwd(
                     inputmat, ln_weight, ln_bias, eps
@@ -1677,23 +1745,39 @@ class _LayerNormMLP(torch.autograd.Function):
             fc2_bias = cast_if_needed(fc2_bias, bias_dtype) if use_bias else fc2_bias
 
             if update_fp8_weights:
-                fp8_cast_transpose_fused(
-                    fc1_weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=fc1_weight_fp8,
-                    transpose_out=fc1_weight_t_fp8,
-                )
+                if is_training:
+                    fp8_cast_transpose_fused(
+                        fc1_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=fc1_weight_fp8,
+                        transpose_out=fc1_weight_t_fp8,
+                    )
 
-                fp8_cast_transpose_fused(
-                    fc2_weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM2_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=fc2_weight_fp8,
-                    transpose_out=fc2_weight_t_fp8,
-                )
+                    fp8_cast_transpose_fused(
+                        fc2_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM2_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=fc2_weight_fp8,
+                        transpose_out=fc2_weight_t_fp8,
+                    )
+                else:
+                    fc1_weight_t_fp8 = None
+                    fc1_weight_fp8 = cast_to_fp8(
+                        fc1_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                    )
+                    fc2_weight_t_fp8 = None
+                    fc2_weight_fp8 = cast_to_fp8(
+                        fc2_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM2_WEIGHT,
+                        fp8_dtype_forward,
+                    )
 
             fc1_out = fp8_gemm(
                 fc1_weight_fp8,
@@ -2114,6 +2198,7 @@ class _LayerNormMLP(torch.autograd.Function):
             None,
             None,
             None,
+            None,
         )
 
 
@@ -2385,6 +2470,7 @@ class LayerNormMLP(TransformerEngineBaseModule):
             self.return_layernorm_output,
             self.bias_gelu_nvfusion,
             self.set_parallel_mode,
+            self.training,
         )
 
         self.post_forward()
