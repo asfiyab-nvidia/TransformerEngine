@@ -24,12 +24,13 @@ class Test_Softmax(nn.Module):
 
     def forward(self, inp):
         scale_factor = 1.
+        scale_half_tensor = torch.tensor(scale_factor, dtype=torch.float16)
         if self.mask_inp:
             # setting to arbitrary float for testing purposes
-            mask = torch.randn(inp.shape[0], 1, inp.shape[2], inp.shape[3], device="cuda")
-            ret = self.softmax_fn.apply(inp, mask, scale_factor)
+            mask = torch.randn(hidden_size, 1, in_features, in_features, device="cuda")
+            ret = self.softmax_fn.apply(inp, mask, scale_half_tensor)
         else:
-            ret = self.softmax_fn.apply(inp, scale_factor)
+            ret = self.softmax_fn.apply(inp, scale_half_tensor)
 
         return ret
 
