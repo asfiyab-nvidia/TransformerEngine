@@ -40,11 +40,6 @@ class TestFP8_Layernorm(nn.Module):
             fp8_tensor,
             output_type)
 
-        ret = torch.ops.tex_ts.cast_from_fp8_ts(
-            ret,
-            meta.scale_inv,
-            output_type,
-            tex.DType.kFloat32)
         return ret
 
 
