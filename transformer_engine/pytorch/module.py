@@ -506,7 +506,7 @@ class _LayerNormLinear(torch.autograd.Function):
         return_layernorm_output: bool,
         is_training: bool
     ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
-        assert is_training
+
         # Make sure input dimensions are compatible
         in_features = ln_weight.numel()
         assert inp.shape[-1] == in_features, "GEMM not possible"

@@ -85,7 +85,7 @@ at::Tensor layernorm_fwd_fp8_ts(const at::Tensor &input,
   // 64x64 byte type
   // 64 float type
   // 64 float type
-  std::vector<at::Tensor> output = layernorm_fwd_fp8(
+  at::Tensor output = layernorm_fwd_fp8_inf(
     input,
     weight,
     bias,
@@ -95,7 +95,7 @@ at::Tensor layernorm_fwd_fp8_ts(const at::Tensor &input,
     scale_inv,
     otype_arg);
 
-  return output[0];
+  return output;
 }
 
 // first arg here defines the namespace where the op is registered
