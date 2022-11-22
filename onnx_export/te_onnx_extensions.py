@@ -48,10 +48,10 @@ def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_type, trans_weight,
     empty_tensor_size = list(range(0, 1))
     bias_empty = torch.onnx.symbolic_helper._get_tensor_sizes(bias) == empty_tensor_size
     pre_gelu_out_empty = torch.onnx.symbolic_helper._get_tensor_sizes(pre_gelu_out) == empty_tensor_size
-    if not bias_empty:
+    if pre_gelu_out_empty and not bias_empty:
         output = g.op('Add', output, bias)
-
-    if not pre_gelu_out_empty:
+    elif not pre_gelu_out_empty and not bias_empty:
+        output = g.op('Add', output, bias)
         output = torch.onnx.symbolic_opset9.gelu(g, output)
     return output
 

@@ -81,8 +81,10 @@ class TestFP8_GEMM(nn.Module):
         return ret
 
 class Test_GEMM(nn.Module):
-    def __init__(self):
+    def __init__(self, use_bias=False, gelu=False):
         super().__init__()
+        self.use_bias = use_bias
+        self.gelu = gelu
 
     def forward(self, inp, weight):
         bias_size = out_features
@@ -100,10 +102,10 @@ class Test_GEMM(nn.Module):
 
             # test bias
             bias=bias,
-            use_bias=True,
+            use_bias=self.use_bias,
 
             # test gelu
-            gelu=True,
+            gelu=self.gelu,
             gelu_input=gelu_input,
             grad=False # only True for backward pass
         )
@@ -131,11 +133,14 @@ def export(model, onnx_file_name):
 # Initialize parser
 parser = argparse.ArgumentParser()
 parser.add_argument('--fp8', action='store_true', help="Export FP8 model")
+parser.add_argument('--use_bias', action='store_true', help="Export non-FP8 model with bias")
+parser.add_argument('--gelu', action='store_true', help="Export non-FP8 model with gelu")
+
 args = parser.parse_args()
 
 if args.fp8:
     model_fp8 = TestFP8_GEMM()
     export(model_fp8, "te.fp8_gemm.onnx")
 else:
-    model_non_fp8 = Test_GEMM()
+    model_non_fp8 = Test_GEMM(use_bias=args.use_bias, gelu=args.gelu)
     export(model_non_fp8, "te.non_fp8_gemm.onnx")
