@@ -88,10 +88,12 @@ at::Tensor fp8_gelu_ts(at::Tensor input,
 
 at::Tensor te_gemm_ts(at::Tensor A,
                       at::Tensor A_scale_inverse,
+                      int64_t A_fp8_tensor,
                       int64_t A_type,
                       int64_t transa,
                       at::Tensor B,
                       at::Tensor B_scale_inverse,
+                      int64_t B_fp8_tensor,
                       int64_t B_type,
                       int64_t transb,
                       at::Tensor D,
@@ -115,12 +117,20 @@ at::Tensor te_gemm_ts(at::Tensor A,
   bool accumulate_arg = static_cast<bool>(accumulate);
   bool use_split_accumulator_arg = static_cast<bool>(use_split_accumulator);
 
+  at::Tensor A_scale_inverse_arg = A_scale_inverse.clone();
+  if (A_scale_inverse.numel())
+    A_scale_inverse_arg = A_scale_inverse[A_fp8_tensor];
+
+  at::Tensor B_scale_inverse_arg = B_scale_inverse.clone();
+  if (B_scale_inverse.numel())
+    B_scale_inverse_arg = B_scale_inverse[B_fp8_tensor];
+
   te_gemm(A,
-          A_scale_inverse,
+          A_scale_inverse_arg,
           A_type_arg,
           transa_arg,
           B,
-          B_scale_inverse,
+          B_scale_inverse_arg,
           B_type_arg,
           transb_arg,
           D,

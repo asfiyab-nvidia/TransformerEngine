@@ -60,16 +60,16 @@ class TestFP8_GEMM(nn.Module):
             fp8_tensor_weight,
             weights_type)
 
-        scale_inv_weights = torch.ones(nb_weight_scales, dtype=torch.float32, device="cuda")
-        scale_inv_inp = torch.ones(nb_inp_scales, dtype=torch.float32, device="cuda")
         # TODO: note that this is FP32 and will not work for now (BF16 is required)
         bias = torch.randn(bias_size, dtype=torch.float32, device="cuda")
         ret = fp8_gemm(
             weight_fp8,
-            scale_inv_weights,
+            meta_weight.scale_inv,
+            fp8_tensor_weight,
             inp_type,
             inp_fp8,
-            scale_inv_inp,
+            meta_inp.scale_inv,
+            fp8_tensor_inp,
             weights_type,
             outp_type,
             get_workspace(),

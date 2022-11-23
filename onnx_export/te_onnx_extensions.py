@@ -24,13 +24,13 @@ def onnx_fp8_gelu(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     return q
 
 
-@symbolic_helper.parse_args("v", "v", "i", "i",
-                             "v", "v", "i", "i",
+@symbolic_helper.parse_args("v", "v", "i", "i", "i",
+                             "v", "v", "i", "i", "i",
                              "v", "i",
                              "v", "v", "i", "v",
                              "i", "i", "i")
-def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_type, trans_weight,
-                      input, input_scale_inverse, input_type, trans_input,
+def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_fp8_tensor, weight_type, trans_weight,
+                      input, input_scale_inverse, input_fp8_tensor, input_type, trans_input,
                       out, out_type,
                       bias,
                       pre_gelu_out,

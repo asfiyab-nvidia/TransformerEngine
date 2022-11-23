@@ -11,9 +11,11 @@ from .constants import TE_DType
 def fp8_gemm(
     A: torch.Tensor,
     A_scale_inv: torch.Tensor,
+    A_fp8_tensor: Union[tex.FP8FwdTensors, tex.FP8BwdTensors],
     A_dtype: tex.DType,
     B: torch.Tensor,
     B_scale_inv: torch.Tensor,
+    B_fp8_tensor: Union[tex.FP8FwdTensors, tex.FP8BwdTensors],
     B_dtype: tex.DType,
     out_dtype: torch.dtype,
     workspace: torch.Tensor,
@@ -43,10 +45,12 @@ def fp8_gemm(
     output_tensor = torch.ops.tex_ts.te_gemm_ts(
         A,
         A_scale_inv,
+        A_fp8_tensor,
         A_dtype,
         True,  # transa
         B,
         B_scale_inv,
+        B_fp8_tensor,
         B_dtype,
         False,  # transb
         out,
@@ -86,6 +90,7 @@ def gemm(
     transa = layout[0] == "T"
     transb = layout[1] == "T"
     empty_tensor = torch.Tensor()
+    fp8_index = -1 # dummy index
 
     input_dtype = TE_DType[dtype]
     output_dtype = tex.DType.kFloat32 if fp32_output else input_dtype
@@ -117,10 +122,12 @@ def gemm(
     output_tensor = torch.ops.tex_ts.te_gemm_ts(
         A,
         empty_tensor,
+        fp8_index,
         input_dtype,
         transa,
         B,
         empty_tensor,
+        fp8_index,
         input_dtype,
         transb,
         out,
