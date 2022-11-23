@@ -8,7 +8,7 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import Union, Optional, Callable, Tuple, Dict, List, Any
 from functools import partial
-from torch import functional as F
+from torch.nn import functional as F
 
 import torch
 from torch.nn.parameter import Parameter
@@ -614,7 +614,7 @@ class _LayerNormLinear(torch.autograd.Function):
                     )
                 else:
                     ln_out_return, mu, rsigma = F.layer_norm(
-                        inputmat, ln_weight, ln_bias, eps
+                        inputmat, ln_weight.shape, ln_weight, ln_bias, eps
                     ), None, None
 
                 ln_out = cast_to_fp8(
@@ -627,9 +627,9 @@ class _LayerNormLinear(torch.autograd.Function):
             if is_training:
                 ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
             else:
-                    ln_out_return, mu, rsigma = F.layer_norm(
-                        inputmat, ln_weight, ln_bias, eps
-                    ), None, None
+                ln_out, mu, rsigma = F.layer_norm(
+                    inputmat, ln_weight.shape, ln_weight, ln_bias, eps
+                ), None, None
             ln_out_return = ln_out
 
         # Column Parallel Linear
