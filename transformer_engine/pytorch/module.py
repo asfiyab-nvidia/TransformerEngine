@@ -613,8 +613,9 @@ class _LayerNormLinear(torch.autograd.Function):
                         inputmat, ln_weight, ln_bias, eps
                     )
                 else:
+                    normalized_shape = inputmat.shape[1:]
                     ln_out_return, mu, rsigma = F.layer_norm(
-                        inputmat, ln_weight.shape, ln_weight, ln_bias, eps
+                        inputmat, normalized_shape, ln_weight, ln_bias, eps
                     ), None, None
 
                 ln_out = cast_to_fp8(
@@ -627,8 +628,9 @@ class _LayerNormLinear(torch.autograd.Function):
             if is_training:
                 ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
             else:
+                normalized_shape = inputmat.shape[1:]
                 ln_out, mu, rsigma = F.layer_norm(
-                    inputmat, ln_weight.shape, ln_weight, ln_bias, eps
+                    inputmat, normalized_shape, ln_weight, ln_bias, eps
                 ), None, None
             ln_out_return = ln_out
 
