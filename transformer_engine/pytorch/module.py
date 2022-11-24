@@ -4,7 +4,9 @@
 
 """Top level Transformer Engine PyTorch modules"""
 import os
+import pickle
 import warnings
+import numpy as np
 from abc import ABC, abstractmethod
 from typing import Union, Optional, Callable, Tuple, Dict, List, Any
 from functools import partial
@@ -148,6 +150,7 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
 
     def get_extra_state(self) -> Union[List[Any], None]:
         """Save before checkpointing."""
+        state = None
         if self.fp8:
             state = {}
             state["scale_fwd"] = self.fp8_meta["scaling_fwd"].scale
@@ -164,11 +167,15 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
                     extra[k] = v
             state["extra_fp8_variables"] = extra
 
-            return state
-        return None
+        state_serialized = pickle.dumps(state)
+        state_tensor = torch.tensor(np.frombuffer(state_serialized, dtype=np.uint8), device='cuda')
 
-    def set_extra_state(self, state: Union[List[Any], None]) -> None:
+        return state_tensor
+
+    def set_extra_state(self, state_tensor: Union[List[Any], None]) -> None:
         """Load previous state."""
+        state = pickle.loads(state_tensor.cpu().detach().numpy().tobytes())
+
         if state is None:
             return
 
