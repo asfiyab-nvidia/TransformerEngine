@@ -9,7 +9,6 @@ from transformer_engine.common import recipe
 import transformer_engine_extensions as tex
 from transformer_engine.pytorch.cpp_extensions import cast_to_fp8, fp8_gemm, gemm
 from transformer_engine.pytorch.module import get_workspace
-import te_onnx_extensions
 
 
 OPSET = 11

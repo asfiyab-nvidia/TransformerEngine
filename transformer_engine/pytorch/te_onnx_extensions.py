@@ -1,10 +1,14 @@
-#
-# ONNX symbolic functions for Transformer Engine
-#
+"""
+ONNX symbolic functions for Transformer Engine
+"""
+
 
 import torch
 from torch.onnx import symbolic_helper, register_custom_op_symbolic
 import transformer_engine_extensions as tex
+
+# This file registers custom op symbolic ONNX functions and does not export any symbols.
+__all__ = []
 
 OPSET = 11
 

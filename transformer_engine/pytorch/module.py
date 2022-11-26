@@ -1626,7 +1626,6 @@ def linear_helper(
             out, _ = allreduce(out, tp_group)
 
         # [*, in_features] -> [*, out_features] except first dimension changes for SP
-        print("hiiiiiiiiiiiii")
         return out.view(-1, *inp.shape[1:-1], out.shape[-1])
 
 class Linear(TransformerEngineBaseModule):

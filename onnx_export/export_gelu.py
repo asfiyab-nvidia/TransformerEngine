@@ -7,7 +7,6 @@ import transformer_engine.pytorch as te
 from transformer_engine.common import recipe
 import transformer_engine_extensions as tex
 from transformer_engine.pytorch.cpp_extensions import fp8_gelu
-import te_onnx_extensions
 
 OPSET = 11
 
