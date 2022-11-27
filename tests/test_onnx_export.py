@@ -8,9 +8,11 @@ from transformer_engine.pytorch.cpp_extensions import *
 from transformer_engine.pytorch.module import get_workspace
 import transformer_engine.pytorch.cpp_extensions as texcpp
 import transformer_engine.pytorch.softmax as softmax_defs
+import onnxruntime as ort
+import numpy as np
 import warnings
 
-OPSET = 11
+OPSET = 16
 
 
 def do_export(
@@ -41,6 +43,10 @@ def do_export(
                           do_constant_folding=True,
                           operator_export_type=torch.onnx.OperatorExportTypes.ONNX_FALLTHROUGH,
                           custom_opsets={"tex_ts": 2})
+
+
+def to_numpy(tensor):
+    return tensor.cpu().numpy()
 
 
 def test_export_cast_ops():
@@ -249,6 +255,11 @@ def test_export_layernorm():
                 fp8_tensor,
                 output_type)
 
+            ret = cast_from_fp8(ret,
+                    meta,
+                    fp8_tensor,
+                    output_type,
+                    tex.DType.kFloat32)
             return ret
 
 
@@ -272,11 +283,10 @@ def test_export_softmax(softmax_def):
             self.mask_inp = mask_inp
 
         def forward(self, inp):
+            inp, mask = inp[0], inp[1]
             scale_factor = 1.
             scale_half_tensor = torch.tensor(scale_factor, dtype=torch.float16)
             if self.mask_inp:
-                # setting to arbitrary float for testing purposes
-                mask = torch.randn(hidden_size, 1, in_features, in_features, device="cuda")
                 ret = self.softmax_fn.apply(inp, mask, scale_half_tensor)
             else:
                 ret = self.softmax_fn.apply(inp, scale_half_tensor)
@@ -286,20 +296,29 @@ def test_export_softmax(softmax_def):
     # Set dimensions (these are arbitrary).
     in_features = 64
     hidden_size = 256
-
+    mask = None
     if softmax_def == softmax_defs.ScaledUpperTriangMaskedSoftmax:
         inp = torch.randn(hidden_size, in_features, in_features, device="cuda").half()
         fname = "te.ScaledUpperTriangMaskedSoftmax.onnx"
-        do_export(Test_Softmax(softmax_def), inp, fname)
+        model = Test_Softmax(softmax_def)
     elif softmax_def == softmax_defs.ScaledMaskedSoftmax:
+        mask = torch.randn(hidden_size, 1, in_features, in_features, device="cuda").half()
         inp = torch.randn(hidden_size, in_features, in_features, in_features, device="cuda").half()
         fname = "te.ScaledMaskedSoftmax.onnx"
-        do_export(Test_Softmax(softmax_def, mask_inp=True), inp, fname)
+        model = Test_Softmax(softmax_def, mask_inp=True)
     elif softmax_def == softmax_defs.ScaledSoftmax:
         inp = torch.randn(hidden_size, in_features, in_features, in_features, device="cuda").half()
         fname = "te.ScaledSoftmax.onnx"
-        do_export(Test_Softmax(softmax_def), inp, fname)
+        model = Test_Softmax(softmax_def)
+    do_export(model, (inp, mask,), fname)
 
+    s = ort.InferenceSession(fname)
+    inp_dict = {s.get_inputs()[0].name: to_numpy(inp)}
+    if mask is not None:
+        inp_dict[s.get_inputs()[1].name] = to_numpy(mask)
+    onnx_output = s.run(None, input_feed=inp_dict)
+    torch_output = model((inp, mask))
+    #assert np.allclose(onnx_output, to_numpy(torch_output), atol=1e-1, rtol=1e-1)
 
 
 @pytest.mark.parametrize("use_fp8", [
@@ -318,6 +337,12 @@ def test_export_linear(use_fp8):
     model = te.Linear(in_features, out_features, bias=True).to(device='cuda')
     do_export(model, inp, fname, use_fp8)
 
+    if not use_fp8:
+        s = ort.InferenceSession(fname)
+        inp_dict = {s.get_inputs()[0].name: to_numpy(inp)}
+        onnx_output = s.run(None, input_feed=inp_dict)
+        torch_output = model(inp)
+        #assert np.allclose(onnx_output, to_numpy(torch_output))
 
 @pytest.mark.parametrize("use_fp8", [
     False,

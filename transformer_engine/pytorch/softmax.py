@@ -93,6 +93,7 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
         masked = g.op("Mul", scaled, mask)
         return g.op("Softmax", masked)
 
+
 class ScaledSoftmax(torch.autograd.Function):
     """
     Fused operation which performs following two operations in sequence
