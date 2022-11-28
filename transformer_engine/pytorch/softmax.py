@@ -90,7 +90,11 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
     @staticmethod
     def symbolic(g: torch.Graph, input: torch.Tensor, mask: torch.Tensor, scale: float) -> torch.Value:
         scaled = g.op("Mul", input, scale)
-        masked = g.op("Mul", scaled, mask)
+        one = g.op("Constant", value_t=torch.tensor(1, dtype=torch.int64))
+        inv_mask = g.op("Sub", one, mask)
+        neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16)) # <==== type is hard coded
+        softmax_mask = g.op("Mul", inv_mask, neg_tenK)
+        masked = g.op("Add", scaled, softmax_mask)
         return g.op("Softmax", masked)
 
 

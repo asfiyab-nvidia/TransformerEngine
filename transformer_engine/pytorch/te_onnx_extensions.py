@@ -65,6 +65,7 @@ def onnx_fp8_gemm(g, weight, weight_scale_inverse, weight_fp8_tensor, weight_typ
         output = torch.onnx.symbolic_opset9.gelu(g, output)
     return output
 
+
 @symbolic_helper.parse_args("v", "v", "v", "f", "v", "v", "v",  "i")
 def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, otype):#, normalized_shape):
     normalized_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
