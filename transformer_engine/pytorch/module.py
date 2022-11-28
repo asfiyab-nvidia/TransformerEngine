@@ -1900,9 +1900,15 @@ def layernorm_mlp_fwd(
                 fp8_dtype_forward,
             )
     else:
-        ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
-        ln_out_return = ln_out
+        if is_training:
+            ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
+        else:
+            normalized_shape = inputmat.shape[1:]
+            ln_out, mu, rsigma = F.layer_norm(
+                        inputmat, normalized_shape, ln_weight, ln_bias, eps
+                    ), None, None
 
+        ln_out_return = ln_out
     # Column Parallel Linear
     if set_parallel_mode and sequence_parallel:
         ln_out_total, _ = gather_along_first_dim(ln_out, tp_group)
@@ -2010,7 +2016,7 @@ def layernorm_mlp_fwd(
             gelu=not bias_gelu_nvfusion,
         )
 
-        if bias_gelu_nvfusion:
+        if bias_gelu_nvfusion and is_training:
             fc1_out, _, _ = fc1_outputs
             gelu_out = bias_gelu_fused(fc1_out, fc1_bias)
         else:
