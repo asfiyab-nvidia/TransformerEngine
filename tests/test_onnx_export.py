@@ -343,11 +343,10 @@ def test_export_softmax(softmax_def):
 
         def forward(self, inp, mask):
             scale_factor = 8 # arbitrary value
-            scale_half_tensor = torch.tensor(scale_factor, dtype=torch.float16)
             if self.mask_inp:
-                ret = self.softmax_fn.apply(inp, mask, scale_half_tensor)
+                ret = self.softmax_fn.apply(inp, mask, scale_factor)
             else:
-                ret = self.softmax_fn.apply(inp, scale_half_tensor)
+                ret = self.softmax_fn.apply(inp, scale_factor)
 
             return ret
 
