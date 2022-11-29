@@ -5,9 +5,10 @@
 """Fused scaled masked softmax functions"""
 import os
 from typing import Callable, Tuple, Union
-
+import torch._C._onnx as _C_onnx
 import torch
 from torch import nn
+from torch.onnx import _type_utils
 
 
 class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
@@ -47,8 +48,19 @@ class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Value:
+        def triangular_mask():
+            dtype =  _type_utils.JitScalarType.INT64
+            ones = torch.onnx.symbolic_opset9.ones_like(g, input, dtype)
+            k = g.op("Constant", value_t=torch.tensor(1, dtype=torch.int64))
+            mask = g.op("Trilu", ones, k, upper_i=1)
+            mask = g.op("Cast", mask, to_i=_C_onnx.TensorProtoDataType.BOOL)
+            return mask
+
+        # Captures the logic of function scaled_upper_triang_masked_softmax_warp_forward
+        mask = triangular_mask()
         scaled = g.op("Mul", input, scale)
-        masked = g.op("Trilu", scaled, upper_i=1)
+        neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16))
+        masked = g.op("Where", mask, neg_tenK, scaled)
         return g.op("Softmax", masked)
 
 
@@ -89,13 +101,26 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
 
     @staticmethod
     def symbolic(g: torch.Graph, input: torch.Tensor, mask: torch.Tensor, scale: float) -> torch.Value:
+        # Captures the logic of function scaled_masked_softmax_warp_forward.
+        # output = softmax(mask(input*scale)
+        # Computed as:
+        #   masked_scaled = (1 - mask)*(input*scale)
+        #   softmax_mask = mask * -10000
+        #   output = softmax(masked_scaled + softmax_mask)
         scaled = g.op("Mul", input, scale)
         one = g.op("Constant", value_t=torch.tensor(1, dtype=torch.int64))
         inv_mask = g.op("Sub", one, mask)
-        neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16)) # <==== type is hard coded
-        softmax_mask = g.op("Mul", inv_mask, neg_tenK)
-        masked = g.op("Add", scaled, softmax_mask)
+        # Todo: type is hard coded because softmax uses FP16 or BF16
+        neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16))
+        softmax_mask = g.op("Mul", mask, neg_tenK)
+        masked_scaled = g.op("Mul", inv_mask, scaled)
+        masked = g.op("Add", masked_scaled, softmax_mask)
         return g.op("Softmax", masked)
+        # An alternative implementation
+        # scaled = g.op("Mul", input, scale)
+        # neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16))
+        # masked = g.op("Where", mask, neg_tenK, scaled)
+        # return g.op("Softmax", masked)
 
 
 class ScaledSoftmax(torch.autograd.Function):
