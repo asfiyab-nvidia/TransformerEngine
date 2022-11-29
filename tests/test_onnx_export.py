@@ -85,18 +85,18 @@ def validate_result(
     for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
         torch_output = to_numpy(torch_output)
         # Compare ORT and PyTorch outputs
-        ac = ~np.isclose(onnx_output, torch_output, atol)
+        ac = ~np.isclose(onnx_output, torch_output, atol=atol)
         mismatches = ac.nonzero()
         mismatched_ids = [loc for loc in zip(*mismatches)]
         if mismatched_ids:
             # Log some information in case of error.
-            print("*"*100)
+            print("*" * 100)
             print(onnx_output.shape)
             nb_vals = min(len(mismatched_ids), max_errors_printed)
             print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors:")
             for loc in mismatched_ids[:nb_vals]:
                 print(f"{onnx_output[loc]} -- {torch_output[loc]}")
-        assert np.allclose(onnx_output, torch_output, atol=atol)
+            raise ValueError(f"Output validation of {fname} failed with {len(mismatches)} errors")
 
 
 def test_export_cast_ops():
@@ -478,7 +478,15 @@ def test_export_layernorm_mlp(
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
-def test_export_core_attention():
+
+@pytest.mark.parametrize("attn_mask_type", ["causal", "padding"])
+@pytest.mark.parametrize("attention_softmax_in_fp32", [True, False])
+@pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
+def test_export_core_attention(
+    attn_mask_type: str,
+    attention_softmax_in_fp32: bool,
+    apply_query_key_layer_scaling: bool,
+):
     # Set dimensions (these are arbitrary).
     kv_channels = 64
     num_attention_heads = 1
@@ -489,21 +497,44 @@ def test_export_core_attention():
     value_layer = torch.randn(qkv_size, device="cuda")
     attention_mask = None
     inp = (query_layer, key_layer, value_layer, attention_mask)
-    fname = "te.core_attention_fp8.onnx"
+    sm_prec_str = "_fp32" if attention_softmax_in_fp32 else "_fp16"
+    qk_scaling_str = "_qk_scaling" if apply_query_key_layer_scaling else ""
+    fname = f"te.core_attention_{attn_mask_type}{sm_prec_str}{qk_scaling_str}.onnx"
     model = te.transformer.CoreAttention(
         num_attention_heads=num_attention_heads,
         kv_channels=kv_channels,
         attention_dropout=0.5,
+        attn_mask_type=attn_mask_type,
+        attention_softmax_in_fp32=attention_softmax_in_fp32,
+        apply_query_key_layer_scaling=apply_query_key_layer_scaling,
     ).to(device='cuda')
     do_export(model, (query_layer, key_layer, value_layer, attention_mask), fname, use_fp8=True)
     validate_result(fname, inp, model, atol=1e-3)
 
 
-@pytest.mark.parametrize("use_fp8", [
-    False,
-    True,
+@pytest.mark.parametrize("use_fp8", [False, True])
+@pytest.mark.parametrize("attn_mask_type", ["causal", "padding"])
+@pytest.mark.parametrize("params_dtype", [
+    torch.float32,
+    #torch.float16 # TODO: handle this
 ])
-def test_export_multihead_attention(use_fp8):
+# Todo: handle case of True
+@pytest.mark.parametrize("input_layernorm", [False])
+@pytest.mark.parametrize("return_layernorm_output", [False])
+@pytest.mark.parametrize("attention_type", [
+    "self",
+    #"cross" # TODO: handle this
+])
+@pytest.mark.parametrize("fuse_qkv_params", [False, True])
+def test_export_multihead_attention(
+    use_fp8: bool,
+    attn_mask_type: str,
+    params_dtype: torch.dtype,
+    return_layernorm_output: bool,
+    input_layernorm: bool,
+    attention_type: str,
+    fuse_qkv_params: bool
+):
     hidden_size = 256
     sequence_length = 128
     batch_size = 4
@@ -525,9 +556,16 @@ def test_export_multihead_attention(use_fp8):
     hidden_states = torch.randn(sequence_length, batch_size, hidden_size, device="cuda")
     attention_mask = None
     inp = (hidden_states, attention_mask)
-    fp8 = "_fp8" if use_fp8 else ""
-    fname = f"te.multihead_attention{fp8}.onnx"
-    model = te.transformer.MultiHeadAttention(*attention_args,
+    fp8_str = "_fp8" if use_fp8 else ""
+    fname = f"te.multihead_attention{fp8_str}.onnx"
+    model = te.transformer.MultiHeadAttention(
+        *attention_args,
+        attn_mask_type=attn_mask_type,
+        params_dtype=params_dtype,
+        return_layernorm_output=return_layernorm_output,
+        input_layernorm=input_layernorm,
+        attention_type=attention_type,
+        fuse_qkv_params=fuse_qkv_params,
     ).to(device='cuda')
     do_export(model, inp, fname, use_fp8)
     if not use_fp8:
