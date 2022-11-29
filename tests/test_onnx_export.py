@@ -14,6 +14,7 @@ from transformer_engine.pytorch.cpp_extensions import *
 from transformer_engine.pytorch.module import get_workspace
 import transformer_engine.pytorch.cpp_extensions as texcpp
 import transformer_engine.pytorch.softmax as softmax_defs
+from transformer_engine.pytorch.utils import get_default_init_method
 import onnxruntime as ort
 import numpy as np
 import warnings
@@ -42,7 +43,7 @@ def do_export(
 
         model.cuda().eval()
         torch.onnx.export(model,
-                          inp if isinstance(inp, list) else (inp,),
+                          inp if isinstance(inp, list) or isinstance(inp, tuple) else (inp,),
                           fname,
                           verbose=False,
                           opset_version=opset,
@@ -54,7 +55,7 @@ def do_export(
 
 
 def to_numpy(tensor):
-    return tensor.cpu().numpy()
+    return tensor.cpu().detach().numpy()
 
 
 def validate_result(
@@ -69,25 +70,33 @@ def validate_result(
     inp_dict = {}
     if isinstance(inps, tuple) or isinstance(inps, list):
         for idx, inp in enumerate(inps):
+            if inp is None:
+                continue
             inp_dict[s.get_inputs()[idx].name] = to_numpy(inp)
     else:
         inp_dict[s.get_inputs()[0].name] = to_numpy(inps)
-    onnx_output = s.run(None, input_feed=inp_dict)[0]
-    torch_output = to_numpy(model(inps))
+    onnx_outputs = s.run(None, input_feed=inp_dict)
+    torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
 
-    # Compare ORT and PyTorch outputs
-    ac = ~np.isclose(onnx_output, torch_output, atol)
-    mismatches = ac.nonzero()
-    mismatched_ids = [loc for loc in zip(*mismatches)]
-    if mismatched_ids:
-         # Log some information in case of error.
-        print("*"*100)
-        print(onnx_output.shape)
-        nb_vals = min(len(mismatched_ids), max_errors_printed)
-        print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors:")
-        for loc in mismatched_ids[:nb_vals]:
-            print(f"{onnx_output[loc]} -- {torch_output[loc]}")
-    assert np.allclose(onnx_output, torch_output, atol=atol)
+    if not isinstance(torch_outputs, tuple):
+        torch_outputs = (torch_outputs, )
+
+    assert len(onnx_outputs) == len(torch_outputs)
+    for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
+        torch_output = to_numpy(torch_output)
+        # Compare ORT and PyTorch outputs
+        ac = ~np.isclose(onnx_output, torch_output, atol)
+        mismatches = ac.nonzero()
+        mismatched_ids = [loc for loc in zip(*mismatches)]
+        if mismatched_ids:
+            # Log some information in case of error.
+            print("*"*100)
+            print(onnx_output.shape)
+            nb_vals = min(len(mismatched_ids), max_errors_printed)
+            print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors:")
+            for loc in mismatched_ids[:nb_vals]:
+                print(f"{onnx_output[loc]} -- {torch_output[loc]}")
+        assert np.allclose(onnx_output, torch_output, atol=atol)
 
 
 def test_export_cast_ops():
@@ -195,8 +204,7 @@ def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
             self.weights_type = tex.DType.kFloat8E4M3
             self.outp_type = torch.float32
 
-        def forward(self, inputs):
-            inp, weight = inputs
+        def forward(self, inp, weight):
 
             inp_fp8 = cast_to_fp8(
                 inp,
@@ -238,8 +246,7 @@ def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
             self.bias = torch.randn(bias_size, dtype=torch.float32, device="cuda")
             self.gelu_input = torch.randn(hidden_size, out_features, dtype=torch.float32, device="cuda")
 
-        def forward(self, inputs):
-            inp, weight = inputs
+        def forward(self, inp, weight):
             outp_type = torch.float32
 
             # note: due to logic in lines 104:116 and L129 in cpp_extensions.py
@@ -334,8 +341,7 @@ def test_export_softmax(softmax_def):
             self.softmax_fn = softmax_function
             self.mask_inp = mask_inp
 
-        def forward(self, inp):
-            inp, mask = inp[0], inp[1]
+        def forward(self, inp, mask):
             scale_factor = 8 # arbitrary value
             scale_half_tensor = torch.tensor(scale_factor, dtype=torch.float16)
             if self.mask_inp:
@@ -373,7 +379,7 @@ def test_export_softmax(softmax_def):
     if mask is not None:
         inp_dict[s.get_inputs()[1].name] = to_numpy(mask)
     onnx_output = s.run(None, input_feed=inp_dict)[0]
-    torch_output = to_numpy(model((inp, mask)))
+    torch_output = to_numpy(model(inp, mask))
 
     atol = 1e-3
     ac = ~np.isclose(onnx_output, torch_output, atol=atol)
@@ -473,32 +479,57 @@ def test_export_layernorm_mlp(
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
-# def test_export_core_attention():
-#     # Set dimensions (these are arbitrary).
-#     in_features = 64
-#     out_features = 256
-#     kv_channels = 64
+def test_export_core_attention():
+    # Set dimensions (these are arbitrary).
+    kv_channels = 64
+    num_attention_heads = 1
+    qkv_size = (2048, 4, num_attention_heads, kv_channels)
 
-#     inp = torch.randn(in_features, out_features, device="cuda")
-#     fname = "te.core_attention_fp8.onnx"
-#     model = te.transformer.CoreAttention(
-#         num_attention_heads=1,
-#         kv_channels=kv_channels,
-#         attention_dropout=0.5,
-#     ).to(device='cuda')
-#     do_export(model, inp, fname, use_fp8=True)
+    query_layer = torch.randn(qkv_size, device="cuda")
+    key_layer = torch.randn(qkv_size, device="cuda")
+    value_layer = torch.randn(qkv_size, device="cuda")
+    attention_mask = None
+    inp = (query_layer, key_layer, value_layer, attention_mask)
+    fname = "te.core_attention_fp8.onnx"
+    model = te.transformer.CoreAttention(
+        num_attention_heads=num_attention_heads,
+        kv_channels=kv_channels,
+        attention_dropout=0.5,
+    ).to(device='cuda')
+    do_export(model, (query_layer, key_layer, value_layer, attention_mask), fname, use_fp8=True)
+    validate_result(fname, inp, model, atol=1e-3)
 
 
-# def test_export_multihead_attention():
-#     in_features = 64
-#     out_features = 256
-#     kv_channels = 64
+@pytest.mark.parametrize("use_fp8", [
+    False,
+    True,
+])
+def test_export_multihead_attention(use_fp8):
+    hidden_size = 256
+    sequence_length = 128
+    batch_size = 4
 
-#     inp = torch.randn(in_features, out_features, device="cuda")
-#     fname = "te.multihead_attention_fp8.onnx"
-#     model = te.transformer.MultiHeadAttention(
-#         num_attention_heads=1,
-#         kv_channels=kv_channels,
-#         attention_dropout=0.5,
-#     ).to(device='cuda')
-#     do_export(model, inp, fname, use_fp8=True)
+    num_attention_heads = 32
+    kv_channels = 8
+    attention_dropout = 0.1
+    layernorm_epsilon = 1e-5
+    init_method = output_layer_init_method = get_default_init_method()
+    attention_args = (
+            hidden_size,
+            num_attention_heads,
+            kv_channels,
+            attention_dropout,
+            layernorm_epsilon,
+            init_method,
+            output_layer_init_method,
+        )
+    hidden_states = torch.randn(sequence_length, batch_size, hidden_size, device="cuda")
+    attention_mask = None
+    inp = (hidden_states, attention_mask)
+    fp8 = "_fp8" if use_fp8 else ""
+    fname = f"te.multihead_attention{fp8}.onnx"
+    model = te.transformer.MultiHeadAttention(*attention_args,
+    ).to(device='cuda')
+    do_export(model, inp, fname, use_fp8)
+    if not use_fp8:
+        validate_result(fname, inp, model, atol=1e-3)
