@@ -28,6 +28,8 @@ def do_export(
     model: torch.nn.Module,
     inp: torch.Tensor,
     fname: str,
+    input_names: list=["input"],
+    output_names: list=["output"],
     use_fp8: bool=True,
     opset: int=OPSET
 ):
@@ -47,8 +49,8 @@ def do_export(
                           fname,
                           verbose=False,
                           opset_version=opset,
-                          input_names=["input"],
-                          output_names=["output"],
+                          input_names=input_names,
+                          output_names=output_names,
                           do_constant_folding=True,
                           operator_export_type=torch.onnx.OperatorExportTypes.ONNX_FALLTHROUGH,
                           custom_opsets={"tex_ts": 2})
@@ -478,11 +480,21 @@ def test_export_layernorm_mlp(
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
-
-@pytest.mark.parametrize("attn_mask_type", ["causal", "padding"])
+test_configs_core_attention = [
+    # Torch tests 2 configs
+    (True, False, "padding"),
+    (True, True, "padding"),
+    # TE tests 3 configs
+    (False, False, "causal"), # calls ScaledUpperTriangMaskedSoftmax
+    (False, True, "padding"), # calls ScaledMaskedSoftmax
+    (False, False, "padding"), # calls ScaledSoftmax
+]
+@pytest.mark.parametrize("use_torch, use_mask, attn_mask_type", test_configs_core_attention)
 @pytest.mark.parametrize("attention_softmax_in_fp32", [True, False])
 @pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
 def test_export_core_attention(
+    use_torch: bool,
+    use_mask: bool,
     attn_mask_type: str,
     attention_softmax_in_fp32: bool,
     apply_query_key_layer_scaling: bool,
@@ -492,14 +504,31 @@ def test_export_core_attention(
     num_attention_heads = 1
     qkv_size = (2048, 4, num_attention_heads, kv_channels)
 
-    query_layer = torch.randn(qkv_size, device="cuda")
-    key_layer = torch.randn(qkv_size, device="cuda")
-    value_layer = torch.randn(qkv_size, device="cuda")
+    dtype = torch.float16
+    if use_torch:
+        dtype = torch.float32
+
+    query_layer = torch.randn(qkv_size, dtype=dtype, device="cuda")
+    key_layer = torch.randn(qkv_size, dtype=dtype, device="cuda")
+    value_layer = torch.randn(qkv_size, dtype=dtype, device="cuda")
+    input_names = ["query", "key", "value"]
     attention_mask = None
+    if use_mask:
+        # Generate a random mask with 50% probability for 0 or 1.
+        probs = 0.5 * torch.ones(qkv_size[1], qkv_size[2], qkv_size[0], qkv_size[0], device="cuda")
+        attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        input_names.append("attention_mask")
     inp = (query_layer, key_layer, value_layer, attention_mask)
+
     sm_prec_str = "_fp32" if attention_softmax_in_fp32 else "_fp16"
     qk_scaling_str = "_qk_scaling" if apply_query_key_layer_scaling else ""
-    fname = f"te.core_attention_{attn_mask_type}{sm_prec_str}{qk_scaling_str}.onnx"
+
+    mask_suffix = "_masked" if use_mask else \
+                "_upper_trian_masked" if attn_mask_type=="causal" else \
+                ""
+    torch_suffix = "_torch" if use_torch else ""
+    fname = f"te.core_attention{mask_suffix}{torch_suffix}{sm_prec_str}{qk_scaling_str}.onnx"
+
     model = te.transformer.CoreAttention(
         num_attention_heads=num_attention_heads,
         kv_channels=kv_channels,
@@ -508,7 +537,11 @@ def test_export_core_attention(
         attention_softmax_in_fp32=attention_softmax_in_fp32,
         apply_query_key_layer_scaling=apply_query_key_layer_scaling,
     ).to(device='cuda')
-    do_export(model, (query_layer, key_layer, value_layer, attention_mask), fname, use_fp8=True)
+    do_export(model,
+            inp,
+            fname,
+            input_names=input_names,
+            use_fp8=True)
     validate_result(fname, inp, model, atol=1e-3)
 
 
