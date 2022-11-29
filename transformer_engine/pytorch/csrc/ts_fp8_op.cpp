@@ -161,10 +161,6 @@ at::Tensor layernorm_fwd_fp8_ts(const at::Tensor &input,
   //eps
   float eps_float = (float) eps;
 
-  // output is a vector of 3 tensors:
-  // 64x64 byte type
-  // 64 float type
-  // 64 float type
   at::Tensor output = layernorm_fwd_fp8_inf(
     input,
     weight,

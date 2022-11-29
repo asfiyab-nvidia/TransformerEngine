@@ -259,7 +259,6 @@ def layernorm_fwd_fp8_inf(
     bias: torch.Tensor,
     eps: float,
     fp8_meta_tensor: tex.FP8TensorMeta,
-    fp8_tensor: Union[tex.FP8FwdTensors, tex.FP8BwdTensors],
     otype: tex.DType,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """LayerNorm with FP8 output.

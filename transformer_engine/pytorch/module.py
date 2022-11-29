@@ -605,7 +605,6 @@ def layernorm_linear_fwd(
                         ln_bias,
                         eps,
                         fp8_meta["scaling_fwd"],
-                        tex.FP8FwdTensors.GEMM1_INPUT,
                         fp8_dtype_forward,
                     )
             else:
@@ -1886,7 +1885,6 @@ def layernorm_mlp_fwd(
                     ln_bias,
                     eps,
                     fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
                     fp8_dtype_forward,
                 )
         else:

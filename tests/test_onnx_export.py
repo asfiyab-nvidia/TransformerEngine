@@ -269,10 +269,10 @@ def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
     in_features = 64
     inp = torch.randn(hidden_size, in_features, device="cuda")
     weight = torch.randn(out_features, in_features, device="cuda")
-    fp8 = "_fp8" if use_fp8 else ""
-    bias = "_bias" if use_bias else ""
-    gelu = "_gelu" if use_gelu else ""
-    fname = f"te.gemm{fp8}{bias}{gelu}.onnx"
+    fp8_str = "_fp8" if use_fp8 else ""
+    bias_str = "_bias" if use_bias else ""
+    gelu_str = "_gelu" if use_gelu else ""
+    fname = f"te.gemm{fp8_str}{bias_str}{gelu_str}.onnx"
     if use_fp8:
         model = TestFP8_GEMM()
         use_fp8, use_bias, use_gelu
@@ -289,7 +289,7 @@ def test_export_layernorm():
             # inputs to layernorm_fwd_fp8_ts
             weight = torch.randn(64, 64, dtype=torch.float32, device="cuda")
             bias = torch.randn(64, dtype=torch.float32, device="cuda")
-            eps = torch.ones(1, dtype=torch.float32, device="cuda")[0] * 1
+            eps = 1e-4 # An arbitrary small value
 
             fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT # Casting to Int happens internally
 
@@ -305,7 +305,6 @@ def test_export_layernorm():
                 bias,
                 eps,
                 meta,
-                fp8_tensor,
                 output_type)
 
             ret = cast_from_fp8(ret,
@@ -393,53 +392,68 @@ def test_export_softmax(softmax_def):
     assert np.allclose(onnx_output, torch_output, atol=atol)
 
 
-@pytest.mark.parametrize("use_fp8", [
-    False,
-    True,
-])
-def test_export_linear(use_fp8):
+@pytest.mark.parametrize("use_fp8", [False,True])
+@pytest.mark.parametrize("bias", [False,True])
+# Todo: handle case of True
+@pytest.mark.parametrize("return_bias", [False])
+def test_export_linear(use_fp8: bool, bias: bool, return_bias: bool):
     # Set dimensions (these are arbitrary).
     in_features = 64
     out_features = 256
     hidden_size = 256
 
     inp = torch.randn(hidden_size, in_features, device="cuda")
-    fp8 = "_fp8" if use_fp8 else ""
-    fname = f"te.linear{fp8}.onnx"
-    model = te.Linear(in_features, out_features, bias=True).to(device='cuda')
+    fp8_str = "_fp8" if use_fp8 else ""
+    bias_str = "_bias" if bias else ""
+    fname = f"te.linear{fp8_str}{bias_str}.onnx"
+    model = te.Linear(in_features, out_features, bias=bias, return_bias=return_bias).to(device='cuda')
     do_export(model, inp, fname, use_fp8)
 
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
 
-@pytest.mark.parametrize("use_fp8", [
-    False,
-    True,
-])
-def test_export_layernorm_linear(use_fp8):
+@pytest.mark.parametrize("use_fp8", [False, True])
+@pytest.mark.parametrize("bias", [False,True])
+# Todo: handle case of True
+@pytest.mark.parametrize("return_bias", [False])
+@pytest.mark.parametrize("return_layernorm_output", [False])
+def test_export_layernorm_linear(
+    use_fp8: bool,
+    bias: bool,
+    return_bias: bool,
+    return_layernorm_output: bool,
+):
     # Set dimensions (these are arbitrary).
     in_features = 64
     out_features = 256
     hidden_size = 256
 
     inp = torch.randn(in_features, out_features, device="cuda")
-    fp8 = "_fp8" if use_fp8 else ""
-    fname = f"te.layernorm_linear{fp8}.onnx"
+    fp8_str = "_fp8" if use_fp8 else ""
+    bias_str = "_bias" if bias else ""
+    fname = f"te.layernorm_linear{fp8_str}{bias_str}.onnx"
     model = te.LayerNormLinear(hidden_size,
                                3 * hidden_size,
-                               bias=True).to(device='cuda')
+                               bias=bias,
+                               return_bias=return_bias,
+                               return_layernorm_output=return_layernorm_output).to(device='cuda')
     do_export(model, inp, fname, use_fp8)
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
 
-
-@pytest.mark.parametrize("use_fp8", [
-    False,
-    True,
-])
-def test_export_layernorm_mlp(use_fp8):
+@pytest.mark.parametrize("use_fp8", [False, True])
+@pytest.mark.parametrize("bias", [False,True])
+# Todo: handle case of True
+@pytest.mark.parametrize("return_bias", [False])
+@pytest.mark.parametrize("return_layernorm_output", [False])
+def test_export_layernorm_mlp(
+    use_fp8: bool,
+    bias: bool,
+    return_bias: bool,
+    return_layernorm_output: bool,
+):
     # Set dimensions (these are arbitrary).
     in_features = 64
     out_features = 256
@@ -447,11 +461,14 @@ def test_export_layernorm_mlp(use_fp8):
     ffn_hidden_size = 256
 
     inp = torch.randn(in_features, out_features, device="cuda", dtype=torch.float32)
-    fp8 = "_fp8" if use_fp8 else ""
-    fname = f"te.layernorm_mlp{fp8}.onnx"
+    fp8_str = "_fp8" if use_fp8 else ""
+    bias_str = "_bias" if bias else ""
+    fname = f"te.layernorm_mlp{fp8_str}{bias_str}.onnx"
     model = te.LayerNormMLP(hidden_size,
                             ffn_hidden_size,
-                            bias=False).to(device='cuda')
+                            bias=bias,
+                            return_bias=return_bias,
+                            return_layernorm_output=return_layernorm_output).to(device='cuda')
     do_export(model, inp, fname, use_fp8)
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
