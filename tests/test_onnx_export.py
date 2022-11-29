@@ -28,10 +28,10 @@ def do_export(
     model: torch.nn.Module,
     inp: torch.Tensor,
     fname: str,
+    use_fp8: bool=True,
+    opset: int=OPSET,
     input_names: list=["input"],
     output_names: list=["output"],
-    use_fp8: bool=True,
-    opset: int=OPSET
 ):
     """Export to ONNX"""
     fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.E4M3)
