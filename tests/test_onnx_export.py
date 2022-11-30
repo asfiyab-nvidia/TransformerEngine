@@ -554,8 +554,7 @@ def test_export_core_attention(
     torch.float32,
     #torch.float16 # TODO: handle this
 ])
-# Todo: handle case of True
-@pytest.mark.parametrize("input_layernorm", [False])
+@pytest.mark.parametrize("input_layernorm", [True, False])
 @pytest.mark.parametrize("return_layernorm_output", [False])
 @pytest.mark.parametrize("attention_type", [
     "self",
