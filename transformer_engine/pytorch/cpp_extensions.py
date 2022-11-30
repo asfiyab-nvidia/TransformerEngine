@@ -286,7 +286,6 @@ def cast_to_fp8(
     otype: tex.DType,
 ) -> torch.Tensor:
     """Cast input to FP8"""
-    print("Sanity check: Invoking custom TS op cast_to_fp8_ts")
     out = torch.ops.tex_ts.cast_to_fp8_ts(
         inp,
         fp8_meta_tensor.scale,

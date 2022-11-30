@@ -101,16 +101,16 @@ def validate_result(
             raise ValueError(f"Output validation of {fname} failed with {len(mismatches)} errors")
 
 
-def test_export_cast_ops():
+@pytest.mark.parametrize("scale_factor", [448, 112])
+def test_export_cast_ops(scale_factor):
     class TestFP8_QDQ(nn.Module):
         def forward(self, inp):
-            scale_factor = 1.
             fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT
 
             meta = tex.FP8TensorMeta()
             meta.scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
             meta.amax_history = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
-            meta.scale_inv = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
+            meta.scale_inv = 1 / meta.scale
             input_type = tex.DType.kFloat32
             output_type = tex.DType.kFloat8E4M3
 
@@ -126,17 +126,15 @@ def test_export_cast_ops():
                                 input_type)
 
             return ret
-
-
     # Set dimensions (these are arbitrary).
     in_features = 64
     hidden_size = 256
 
     inp = torch.randn(hidden_size, in_features, device="cuda")
-    do_export(TestFP8_QDQ(), inp, "te.cast_fp8.onnx")
+    do_export(TestFP8_QDQ(), inp, "te.cast_fp8.s_{scale_factor}.onnx")
 
-
-def test_export_gelu_fp8():
+@pytest.mark.parametrize("scale_factor", [112])
+def test_export_gelu_fp8(scale_factor):
     class TestFP8_Gelu(nn.Module):
         def forward(self, inp):
             scale_factor = 1.
@@ -145,7 +143,7 @@ def test_export_gelu_fp8():
             meta = tex.FP8TensorMeta()
             meta.scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
             meta.amax_history = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
-            meta.scale_inv = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
+            meta.scale_inv = 1 / meta.scale
             output_type = tex.DType.kFloat8E4M3
 
             ret = fp8_gelu(inp,
@@ -175,27 +173,33 @@ def test_export_gelu_fp8():
     (False, True, False),
     (False, True, True),
 ])
-def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
+@pytest.mark.parametrize("scale_factors", [(112, 448,), ])
+def test_export_gemm_fp8(
+    use_fp8,
+    use_bias,
+    use_gelu,
+    scale_factors
+):
     class TestFP8_GEMM(nn.Module):
-        def __init__(self, use_bias=False, gelu=False):
+        def __init__(self, use_bias, gelu, scale_factors):
             super().__init__()
             self.use_bias = use_bias
             self.gelu = gelu
 
-            scale_factor = 1.
-            self.fp8_tensor_inp = tex.FP8FwdTensors.GEMM1_INPUT # Casting to Int happens internally
+            act_scale_factor, weight_scale_factor = scale_factors
+            self.fp8_tensor_inp = tex.FP8FwdTensors.GEMM1_INPUT
             self.fp8_tensor_weight = tex.FP8FwdTensors.GEMM1_WEIGHT
             nb_inp_scales, nb_weight_scales = 1, out_features
 
             self.meta_inp = tex.FP8TensorMeta()
-            self.meta_inp.scale = torch.ones(nb_inp_scales, dtype=torch.float32, device="cuda") * scale_factor
+            self.meta_inp.scale = torch.ones(nb_inp_scales, dtype=torch.float32, device="cuda") * act_scale_factor
             self.meta_inp.amax_history = torch.zeros(1, nb_inp_scales, dtype=torch.float32, device="cuda")
-            self.meta_inp.scale_inv = torch.ones(nb_inp_scales, dtype=torch.float32, device="cuda") / scale_factor
+            self.meta_inp.scale_inv = 1 / self.meta_inp.scale
 
             self.meta_weight = tex.FP8TensorMeta()
-            self.meta_weight.scale = torch.ones(nb_weight_scales, dtype=torch.float32, device="cuda") * scale_factor
+            self.meta_weight.scale = torch.ones(nb_weight_scales, dtype=torch.float32, device="cuda") * weight_scale_factor
             self.meta_weight.amax_history = torch.zeros(1, nb_weight_scales, dtype=torch.float32, device="cuda")
-            self.meta_weight.scale_inv = torch.ones(nb_weight_scales, dtype=torch.float32, device="cuda") / scale_factor
+            self.meta_weight.scale_inv = 1 / self.meta_weight.scale
 
             bias_size = nb_weight_scales
             # TODO: note that this is FP32 and will not work for now (BF16 is required)
@@ -207,7 +211,6 @@ def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
             self.outp_type = torch.float32
 
         def forward(self, inp, weight):
-
             inp_fp8 = cast_to_fp8(
                 inp,
                 self.meta_inp,
@@ -283,8 +286,7 @@ def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
     gelu_str = "_gelu" if use_gelu else ""
     fname = f"te.gemm{fp8_str}{bias_str}{gelu_str}.onnx"
     if use_fp8:
-        model = TestFP8_GEMM()
-        use_fp8, use_bias, use_gelu
+        model = TestFP8_GEMM(use_bias, use_gelu, scale_factors)
         do_export(model, (inp, weight), fname, use_fp8)
     else:
         model = Test_GEMM(use_bias=use_bias, gelu=use_gelu)
@@ -292,6 +294,7 @@ def test_export_gemm_fp8(use_fp8, use_bias, use_gelu):
         validate_result(fname, (inp, weight), model, atol=1e-1)
 
 
+#@pytest.mark.parametrize("scale_factor", [448])
 def test_export_layernorm():
     class TestFP8_Layernorm(nn.Module):
         def forward(self, inp):
@@ -403,6 +406,7 @@ def test_export_softmax(softmax_def):
 @pytest.mark.parametrize("bias", [False,True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
+#@pytest.mark.parametrize("scale_factor", [448])
 def test_export_linear(use_fp8: bool, bias: bool, return_bias: bool):
     # Set dimensions (these are arbitrary).
     in_features = 64
