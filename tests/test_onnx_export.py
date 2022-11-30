@@ -482,8 +482,8 @@ def test_export_layernorm_mlp(
 
 test_configs_core_attention = [
     # Torch tests 2 configs
-    (True, False, "padding"),
-    (True, True, "padding"),
+    (True, False, None),
+    (True, True, None),
     # TE tests 3 configs
     (False, False, "causal"), # calls ScaledUpperTriangMaskedSoftmax
     (False, True, "padding"), # calls ScaledMaskedSoftmax
@@ -499,6 +499,9 @@ def test_export_core_attention(
     attention_softmax_in_fp32: bool,
     apply_query_key_layer_scaling: bool,
 ):
+    if attn_mask_type is None:
+        attn_mask_type = 'causal'
+
     # Set dimensions (these are arbitrary).
     kv_channels = 64
     num_attention_heads = 1
@@ -524,7 +527,7 @@ def test_export_core_attention(
     qk_scaling_str = "_qk_scaling" if apply_query_key_layer_scaling else ""
 
     mask_suffix = "_masked" if use_mask else \
-                "_upper_trian_masked" if attn_mask_type=="causal" else \
+                "_upper_trian_masked" if attn_mask_type=="causal" and not use_torch else \
                 ""
     torch_suffix = "_torch" if use_torch else ""
     fname = f"te.core_attention{mask_suffix}{torch_suffix}{sm_prec_str}{qk_scaling_str}.onnx"
@@ -542,7 +545,7 @@ def test_export_core_attention(
             fname,
             input_names=input_names,
             use_fp8=True)
-    validate_result(fname, inp, model, atol=1e-3)
+    validate_result(fname, inp, model, atol=1e-2)
 
 
 @pytest.mark.parametrize("use_fp8", [False, True])
