@@ -623,3 +623,52 @@ def test_export_multihead_attention(
     do_export(model, inp, fname, use_fp8, input_names=input_names)
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
+
+@pytest.mark.parametrize("use_fp8", [False, True])
+@pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
+@pytest.mark.parametrize("output_layernorm", [
+    #True, # TO DO: handle this
+    False
+])
+@pytest.mark.parametrize("params_dtype", [
+    torch.float32,
+    torch.float16
+])
+@pytest.mark.parametrize("fuse_qkv_params", [False, True])
+@pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
+def test_export_transformer_layer(use_fp8, use_mask, attn_mask_type,
+                                    output_layernorm, params_dtype,
+                                    fuse_qkv_params,
+                                    apply_query_key_layer_scaling):
+    # Layer configuration
+    hidden_size = 64
+    sequence_length = 128
+    batch_size = 1
+    ffn_hidden_size = 256
+    num_attention_heads = 4
+
+    input_tensor = torch.rand(sequence_length, batch_size, hidden_size, dtype=params_dtype, device="cuda")
+    input_names = ["input"]
+    attention_mask = None
+    if use_mask and attn_mask_type != "causal":
+        # Generate a random mask with 50% probability for 0 or 1.
+        probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda")
+        attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        input_names.append("attention_mask")
+    inp = (input_tensor, attention_mask)
+
+    fp8 = "_fp8" if use_fp8 else ""
+    mask = "_masked" if use_mask and attn_mask_type != "causal" else ""
+    fname = f"te.transformer_layer{fp8}{mask}.onnx"
+    model = te.TransformerLayer(hidden_size,
+                                ffn_hidden_size,
+                                num_attention_heads,
+                                self_attn_mask_type=attn_mask_type,
+                                output_layernorm=output_layernorm,
+                                params_dtype=params_dtype,
+                                fuse_qkv_params=fuse_qkv_params,
+                                apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
+    do_export(model, inp, fname, use_fp8)
+
+    if not use_fp8:
+        validate_result(fname, inp, model, atol=1e-3)
