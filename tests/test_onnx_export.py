@@ -548,11 +548,16 @@ def test_export_core_attention(
     validate_result(fname, inp, model, atol=1e-2)
 
 
+test_configs_multihead_attention = [
+    (False, "causal"), # calls ScaledUpperTriangMaskedSoftmax
+    (True, "padding"), # calls ScaledMaskedSoftmax
+    (False, "padding"), # calls ScaledSoftmax
+]
 @pytest.mark.parametrize("use_fp8", [False, True])
-@pytest.mark.parametrize("attn_mask_type", ["causal", "padding"])
+@pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
 @pytest.mark.parametrize("params_dtype", [
     torch.float32,
-    #torch.float16 # TODO: handle this
+    torch.float16
 ])
 @pytest.mark.parametrize("input_layernorm", [True, False])
 @pytest.mark.parametrize("return_layernorm_output", [False])
@@ -563,6 +568,7 @@ def test_export_core_attention(
 @pytest.mark.parametrize("fuse_qkv_params", [False, True])
 def test_export_multihead_attention(
     use_fp8: bool,
+    use_mask: bool,
     attn_mask_type: str,
     params_dtype: torch.dtype,
     return_layernorm_output: bool,
@@ -588,11 +594,23 @@ def test_export_multihead_attention(
             init_method,
             output_layer_init_method,
         )
-    hidden_states = torch.randn(sequence_length, batch_size, hidden_size, device="cuda")
+    hidden_states = torch.randn(sequence_length, batch_size, hidden_size, dtype=params_dtype, device="cuda")
+    input_names = ["hidden_states"]
     attention_mask = None
+    if use_mask and attn_mask_type != "causal":
+        # Generate a random mask with 50% probability for 0 or 1.
+        probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda")
+        attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        input_names.append("attention_mask")
     inp = (hidden_states, attention_mask)
+
     fp8_str = "_fp8" if use_fp8 else ""
-    fname = f"te.multihead_attention{fp8_str}.onnx"
+    dtype_str = "_fp32" if params_dtype == torch.float32 else "_fp16"
+    attn_type_str = "_self_attention" if attention_type == "self" else "_cross_attention"
+    fuse_qkv_str = "_fused" if fuse_qkv_params else ""
+    mask_str = "_masked" if use_mask and attn_mask_type != "causal" else ""
+    fname = f"te.multihead_attention{fp8_str}{attn_mask_type}{dtype_str}{attn_type_str}{fuse_qkv_str}{mask_str}.onnx"
+
     model = te.transformer.MultiHeadAttention(
         *attention_args,
         attn_mask_type=attn_mask_type,
@@ -602,6 +620,6 @@ def test_export_multihead_attention(
         attention_type=attention_type,
         fuse_qkv_params=fuse_qkv_params,
     ).to(device='cuda')
-    do_export(model, inp, fname, use_fp8)
+    do_export(model, inp, fname, use_fp8, input_names=input_names)
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
