@@ -5,9 +5,9 @@
 """Fused scaled masked softmax functions"""
 import os
 from typing import Callable, Tuple, Union
-import torch._C._onnx as _C_onnx
 import torch
 from torch import nn
+import torch._C._onnx as _C_onnx
 from torch.onnx import _type_utils
 
 
@@ -47,7 +47,7 @@ class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
         return input_grads, None
 
     @staticmethod
-    def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Value:
+    def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Tensor:
         def triangular_mask():
             dtype =  _type_utils.JitScalarType.INT64
             ones = torch.onnx.symbolic_opset9.ones_like(g, input, dtype)
@@ -58,10 +58,16 @@ class ScaledUpperTriangMaskedSoftmax(torch.autograd.Function):
 
         # Captures the logic of function scaled_upper_triang_masked_softmax_warp_forward
         mask = triangular_mask()
+        one = g.op("Constant", value_t=torch.tensor(1, dtype=torch.int64))
+        inv_mask = g.op("Sub", one, mask)
+
+        neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16))
+        softmax_mask = g.op("Mul", mask, neg_tenK)
+
         scale_input = g.op("Constant", value_t=torch.tensor(scale, dtype=torch.float16))
         scaled = g.op("Mul", input, scale_input)
-        neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16))
-        masked = g.op("Where", mask, neg_tenK, scaled)
+        masked_scaled = g.op("Mul", inv_mask, scaled)
+        masked = g.op("Add", masked_scaled, softmax_mask)
         return g.op("Softmax", masked)
 
 
@@ -101,7 +107,7 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
         return input_grads, None, None
 
     @staticmethod
-    def symbolic(g: torch.Graph, input: torch.Tensor, mask: torch.Tensor, scale: float) -> torch.Value:
+    def symbolic(g: torch.Graph, input: torch.Tensor, mask: torch.Tensor, scale: float) -> torch.Tensor:
         # Captures the logic of function scaled_masked_softmax_warp_forward.
         # output = softmax(mask(input*scale)
         # Computed as:
@@ -118,11 +124,6 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
         masked_scaled = g.op("Mul", inv_mask, scaled)
         masked = g.op("Add", masked_scaled, softmax_mask)
         return g.op("Softmax", masked)
-        # An alternative implementation
-        # scaled = g.op("Mul", input, scale)
-        # neg_tenK = g.op("Constant", value_t=torch.tensor(-10000., dtype=torch.float16))
-        # masked = g.op("Where", mask, neg_tenK, scaled)
-        # return g.op("Softmax", masked)
 
 
 class ScaledSoftmax(torch.autograd.Function):
@@ -158,7 +159,7 @@ class ScaledSoftmax(torch.autograd.Function):
         return input_grads, None, None
 
     @staticmethod
-    def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Value:
+    def symbolic(g: torch.Graph, input: torch.Tensor, scale: float) -> torch.Tensor:
         scale_input = g.op("Constant", value_t=torch.tensor(scale, dtype=torch.float16))
         scaled = g.op("Mul", input, scale_input)
         return g.op("Softmax", scaled)

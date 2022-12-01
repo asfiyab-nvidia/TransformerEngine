@@ -241,7 +241,6 @@ def layernorm_fwd_fp8(
     otype: tex.DType,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """LayerNorm with FP8 output"""
-
     return tex.layernorm_fwd_fp8(
         inp,
         weight,
