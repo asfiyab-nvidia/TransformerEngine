@@ -407,11 +407,16 @@ def test_export_softmax(softmax_def, precision):
 
 
 @pytest.mark.parametrize("use_fp8", [False,True])
-@pytest.mark.parametrize("use_bias", [False,True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
-# Todo: cannot handle FP16 for some reason
-@pytest.mark.parametrize("precision", [torch.float32])
+@pytest.mark.parametrize(
+    "precision,     use_bias",[
+    (torch.float32, False),
+    (torch.float32, True),
+    # Todo: cannot configure FP16 when bias is disabled
+    (torch.float16, True),
+    #(torch.float16, False),
+])
 def test_export_linear(
     use_fp8: bool,
     use_bias: bool,
@@ -441,15 +446,20 @@ def test_export_linear(
 
 
 @pytest.mark.parametrize("use_fp8", [False, True])
-@pytest.mark.parametrize("bias", [False,True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
 @pytest.mark.parametrize("return_layernorm_output", [False])
-# Todo: cannot handle FP16 for some reason
-@pytest.mark.parametrize("precision", [torch.float32]) # -- only with bias??
+@pytest.mark.parametrize(
+    "precision,     use_bias",[
+    (torch.float32, False),
+    (torch.float32, True),
+    # Todo: cannot configure FP16 when bias is disabled
+    (torch.float16, True),
+    #(torch.float16, False),
+])
 def test_export_layernorm_linear(
     use_fp8: bool,
-    bias: bool,
+    use_bias: bool,
     return_bias: bool,
     return_layernorm_output: bool,
     precision: torch.dtype
@@ -461,13 +471,13 @@ def test_export_layernorm_linear(
 
     inp = torch.randn(in_features, out_features, device="cuda", dtype=precision)
     fp8_str = "_fp8" if use_fp8 else ""
-    bias_str = "_bias" if bias else ""
+    bias_str = "_bias" if use_bias else ""
     high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
     fname = f"te.layernorm_linear{fp8_str}{bias_str}{high_prec_str}.onnx"
     model = te.LayerNormLinear(
         hidden_size,
         3 * hidden_size,
-        bias=bias,
+        bias=use_bias,
         return_bias=return_bias,
         return_layernorm_output=return_layernorm_output,
         params_dtype=precision,
@@ -478,15 +488,23 @@ def test_export_layernorm_linear(
 
 
 @pytest.mark.parametrize("use_fp8", [False, True])
-@pytest.mark.parametrize("bias", [False,True])
+#@pytest.mark.parametrize("bias", [False,True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
 @pytest.mark.parametrize("return_layernorm_output", [False])
 # Todo: cannot handle FP16 for some reason
-@pytest.mark.parametrize("precision", [torch.float32])
+#@pytest.mark.parametrize("precision", [torch.float32])
+@pytest.mark.parametrize(
+    "precision,     use_bias",[
+    (torch.float32, False),
+    (torch.float32, True),
+    # Todo: cannot configure FP16 when bias is disabled
+    (torch.float16, True),
+    #(torch.float16, False),
+])
 def test_export_layernorm_mlp(
     use_fp8: bool,
-    bias: bool,
+    use_bias: bool,
     return_bias: bool,
     return_layernorm_output: bool,
     precision: torch.dtype
@@ -499,13 +517,13 @@ def test_export_layernorm_mlp(
 
     inp = torch.randn(in_features, out_features, device="cuda", dtype=precision)
     fp8_str = "_fp8" if use_fp8 else ""
-    bias_str = "_bias" if bias else ""
+    bias_str = "_bias" if use_bias else ""
     high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
     fname = f"te.layernorm_mlp{fp8_str}{bias_str}{high_prec_str}.onnx"
     model = te.LayerNormMLP(
         hidden_size,
         ffn_hidden_size,
-        bias=bias,
+        bias=use_bias,
         return_bias=return_bias,
         return_layernorm_output=return_layernorm_output,
         params_dtype=precision,
