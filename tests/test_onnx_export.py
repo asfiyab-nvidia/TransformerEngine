@@ -67,7 +67,10 @@ def validate_result(
     atol: float,
     max_errors_printed: int=10
 ):
-    """Validate the outputs of an ONNX model vs. ONNX Runtime."""
+    """Validate the outputs of an ONNX model vs. ONNX Runtime.
+
+    Use this only to test non-FP8 models because ORT does not support FP8.
+    """
     s = ort.InferenceSession(fname)
     inp_dict = {}
     if isinstance(inps, tuple) or isinstance(inps, list):
@@ -101,16 +104,20 @@ def validate_result(
             raise ValueError(f"Output validation of {fname} failed with {len(mismatches)} errors")
 
 
+def create_meta(scale_factor: float, size: int=1):
+    meta = tex.FP8TensorMeta()
+    meta.amax_history = torch.zeros(1, size, dtype=torch.float32, device="cuda")
+    meta.scale_inv = torch.ones(size, dtype=torch.float32, device="cuda") / scale_factor
+    meta.scale = torch.ones(size, dtype=torch.float32, device="cuda") * scale_factor
+    return meta
+
+
 @pytest.mark.parametrize("scale_factor", [448, 112])
 def test_export_cast_ops(scale_factor):
     class TestFP8_QDQ(nn.Module):
         def forward(self, inp):
             fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT
-
-            meta = tex.FP8TensorMeta()
-            meta.scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
-            meta.amax_history = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
-            meta.scale_inv = 1 / meta.scale
+            meta = create_meta(scale_factor)
             input_type = tex.DType.kFloat32
             output_type = tex.DType.kFloat8E4M3
 
@@ -124,14 +131,13 @@ def test_export_cast_ops(scale_factor):
                                 fp8_tensor,
                                 output_type, # input to cast_to_fp8 is FP8 type
                                 input_type)
-
             return ret
     # Set dimensions (these are arbitrary).
     in_features = 64
     hidden_size = 256
-
     inp = torch.randn(hidden_size, in_features, device="cuda")
-    do_export(TestFP8_QDQ(), inp, "te.cast_fp8.s_{scale_factor}.onnx")
+    do_export(TestFP8_QDQ(), inp, f"te.cast_fp8.s_{scale_factor}.onnx")
+
 
 @pytest.mark.parametrize("scale_factor", [112])
 def test_export_gelu_fp8(scale_factor):
@@ -139,11 +145,7 @@ def test_export_gelu_fp8(scale_factor):
         def forward(self, inp):
             scale_factor = 1.
             fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT
-
-            meta = tex.FP8TensorMeta()
-            meta.scale = torch.ones(1, dtype=torch.float32, device="cuda") * scale_factor
-            meta.amax_history = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
-            meta.scale_inv = 1 / meta.scale
+            meta = create_meta(scale_factor)
             output_type = tex.DType.kFloat8E4M3
 
             ret = fp8_gelu(inp,
@@ -155,7 +157,6 @@ def test_export_gelu_fp8(scale_factor):
                     fp8_tensor,
                     output_type,
                     tex.DType.kFloat32)
-
             return ret
 
     # Set dimensions (these are arbitrary).
@@ -165,6 +166,7 @@ def test_export_gelu_fp8(scale_factor):
     do_export(TestFP8_Gelu(), inp, "te.gelu_fp8.onnx")
 
 
+@pytest.mark.parametrize("scale_factors", [(112, 448,), ])
 @pytest.mark.parametrize("use_fp8, use_bias, use_gelu", [
     (True, False, False),
     (True, True, False),
@@ -173,7 +175,6 @@ def test_export_gelu_fp8(scale_factor):
     (False, True, False),
     (False, True, True),
 ])
-@pytest.mark.parametrize("scale_factors", [(112, 448,), ])
 def test_export_gemm_fp8(
     use_fp8,
     use_bias,
@@ -186,20 +187,14 @@ def test_export_gemm_fp8(
             self.use_bias = use_bias
             self.gelu = gelu
 
-            act_scale_factor, weight_scale_factor = scale_factors
             self.fp8_tensor_inp = tex.FP8FwdTensors.GEMM1_INPUT
             self.fp8_tensor_weight = tex.FP8FwdTensors.GEMM1_WEIGHT
             nb_inp_scales, nb_weight_scales = 1, out_features
 
-            self.meta_inp = tex.FP8TensorMeta()
-            self.meta_inp.scale = torch.ones(nb_inp_scales, dtype=torch.float32, device="cuda") * act_scale_factor
-            self.meta_inp.amax_history = torch.zeros(1, nb_inp_scales, dtype=torch.float32, device="cuda")
-            self.meta_inp.scale_inv = 1 / self.meta_inp.scale
+            act_scale_factor, weight_scale_factor = scale_factors
 
-            self.meta_weight = tex.FP8TensorMeta()
-            self.meta_weight.scale = torch.ones(nb_weight_scales, dtype=torch.float32, device="cuda") * weight_scale_factor
-            self.meta_weight.amax_history = torch.zeros(1, nb_weight_scales, dtype=torch.float32, device="cuda")
-            self.meta_weight.scale_inv = 1 / self.meta_weight.scale
+            self.meta_inp = create_meta(act_scale_factor)
+            self.meta_weight = create_meta(weight_scale_factor, nb_weight_scales)
 
             bias_size = nb_weight_scales
             # TODO: note that this is FP32 and will not work for now (BF16 is required)
@@ -294,8 +289,8 @@ def test_export_gemm_fp8(
         validate_result(fname, (inp, weight), model, atol=1e-1)
 
 
-#@pytest.mark.parametrize("scale_factor", [448])
-def test_export_layernorm():
+@pytest.mark.parametrize("scale_factor", [448])
+def test_export_layernorm(scale_factor):
     class TestFP8_Layernorm(nn.Module):
         def forward(self, inp):
             # inputs to layernorm_fwd_fp8_ts
@@ -304,11 +299,7 @@ def test_export_layernorm():
             eps = 1e-4 # An arbitrary small value
 
             fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT # Casting to Int happens internally
-
-            meta = tex.FP8TensorMeta()
-            meta.scale = torch.ones(1, dtype=torch.float32, device="cuda")
-            meta.amax_history = torch.zeros(1, 1, dtype=torch.float32, device="cuda")
-            meta.scale_inv = torch.ones(1, dtype=torch.float32, device="cuda")
+            meta = create_meta(scale_factor)
             output_type = tex.DType.kFloat8E4M3
 
             ret = texcpp.layernorm_fwd_fp8_inf(
@@ -352,7 +343,6 @@ def test_export_softmax(softmax_def):
                 ret = self.softmax_fn.apply(inp, mask, scale_factor)
             else:
                 ret = self.softmax_fn.apply(inp, scale_factor)
-
             return ret
 
     # Set dimensions (these are arbitrary).
@@ -484,6 +474,7 @@ def test_export_layernorm_mlp(
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
+
 test_configs_core_attention = [
     # Torch tests 2 configs
     (True, False, None),
@@ -553,16 +544,13 @@ def test_export_core_attention(
 
 
 test_configs_multihead_attention = [
-    (False, "causal"), # calls ScaledUpperTriangMaskedSoftmax
-    (True, "padding"), # calls ScaledMaskedSoftmax
+    (False, "causal"),  # calls ScaledUpperTriangMaskedSoftmax
+    (True, "padding"),  # calls ScaledMaskedSoftmax
     (False, "padding"), # calls ScaledSoftmax
 ]
 @pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
-@pytest.mark.parametrize("params_dtype", [
-    torch.float32,
-    torch.float16
-])
+@pytest.mark.parametrize("params_dtype", [torch.float32, torch.float16])
 @pytest.mark.parametrize("input_layernorm", [True, False])
 @pytest.mark.parametrize("return_layernorm_output", [False])
 @pytest.mark.parametrize("attention_type", [
@@ -590,14 +578,14 @@ def test_export_multihead_attention(
     layernorm_epsilon = 1e-5
     init_method = output_layer_init_method = get_default_init_method()
     attention_args = (
-            hidden_size,
-            num_attention_heads,
-            kv_channels,
-            attention_dropout,
-            layernorm_epsilon,
-            init_method,
-            output_layer_init_method,
-        )
+        hidden_size,
+        num_attention_heads,
+        kv_channels,
+        attention_dropout,
+        layernorm_epsilon,
+        init_method,
+        output_layer_init_method,
+    )
     hidden_states = torch.randn(sequence_length, batch_size, hidden_size, dtype=params_dtype, device="cuda")
     input_names = ["hidden_states"]
     attention_mask = None
@@ -628,6 +616,7 @@ def test_export_multihead_attention(
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
 
+
 @pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
 @pytest.mark.parametrize("output_layernorm", [
@@ -640,10 +629,15 @@ def test_export_multihead_attention(
 ])
 @pytest.mark.parametrize("fuse_qkv_params", [False, True])
 @pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
-def test_export_transformer_layer(use_fp8, use_mask, attn_mask_type,
-                                    output_layernorm, params_dtype,
-                                    fuse_qkv_params,
-                                    apply_query_key_layer_scaling):
+def test_export_transformer_layer(
+    use_fp8,
+    use_mask,
+    attn_mask_type,
+    output_layernorm,
+    params_dtype,
+    fuse_qkv_params,
+    apply_query_key_layer_scaling
+):
     # Layer configuration
     hidden_size = 64
     sequence_length = 128
@@ -664,14 +658,15 @@ def test_export_transformer_layer(use_fp8, use_mask, attn_mask_type,
     fp8 = "_fp8" if use_fp8 else ""
     mask = "_masked" if use_mask and attn_mask_type != "causal" else ""
     fname = f"te.transformer_layer{fp8}{mask}.onnx"
-    model = te.TransformerLayer(hidden_size,
-                                ffn_hidden_size,
-                                num_attention_heads,
-                                self_attn_mask_type=attn_mask_type,
-                                output_layernorm=output_layernorm,
-                                params_dtype=params_dtype,
-                                fuse_qkv_params=fuse_qkv_params,
-                                apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
+    model = te.TransformerLayer(
+        hidden_size,
+        ffn_hidden_size,
+        num_attention_heads,
+        self_attn_mask_type=attn_mask_type,
+        output_layernorm=output_layernorm,
+        params_dtype=params_dtype,
+        fuse_qkv_params=fuse_qkv_params,
+        apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
     do_export(model, inp, fname, use_fp8)
 
     if not use_fp8:
