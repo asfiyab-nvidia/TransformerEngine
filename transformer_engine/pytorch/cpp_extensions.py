@@ -56,7 +56,7 @@ def fp8_gemm(
         out,
         out_dtype,
         bias if use_bias else empty_tensor,
-        empty_tensor,
+        empty_tensor,  # this is pre_gelu_out
         False,  # grad
         workspace,
         workspace.shape[0],
