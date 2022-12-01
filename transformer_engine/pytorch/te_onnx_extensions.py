@@ -15,7 +15,7 @@ OPSET = 11
 
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_cast_to_fp8(g, input, scale, amax, scale_inv, fp8_tensor, otype):
-    return g.op("TRT_FP8QuantizeLinear", input, scale)
+    return g.op("TRT_FP8QuantizeLinear", input, scale_inv)
 
 @symbolic_helper.parse_args("v", "v", "i", "i", "i")
 def onnx_cast_from_fp8(g, input, scale_inv, fp8_tensor, itype, otype):
@@ -85,7 +85,7 @@ def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, 
         eps,
         False # cudnn_enable (not relevant)
     )
-    fp8_ln = g.op("TRT_FP8QuantizeLinear", ln, scale)
+    fp8_ln = g.op("TRT_FP8QuantizeLinear", ln, scale_inv)
     return fp8_ln
 
 
