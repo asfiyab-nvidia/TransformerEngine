@@ -148,7 +148,7 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
         self.set_meta_tensor(True)
         self.set_meta_tensor(False)
 
-    def get_extra_state(self) -> Union[List[Any], None]:
+    def get_extra_state(self) -> Union[torch.Tensor, None]:
         """Save before checkpointing."""
         state = None
         if self.fp8:
@@ -167,15 +167,14 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
                     extra[k] = v
             state["extra_fp8_variables"] = extra
 
-        state_serialized = pickle.dumps(state)
-        state_tensor = torch.tensor(np.frombuffer(state_serialized, dtype=np.uint8), device='cuda')
+            state_serialized = pickle.dumps(state)
+            state_tensor = torch.tensor(np.frombuffer(state_serialized, dtype=np.uint8), device='cuda')
 
-        return state_tensor
+            return state_tensor
+        return None
 
-    def set_extra_state(self, state_tensor: Union[List[Any], None]) -> None:
+    def set_extra_state(self, state: Union[torch.Tensor, None]) -> None:
         """Load previous state."""
-        state = pickle.loads(state_tensor.cpu().detach().numpy().tobytes())
-
         if state is None:
             return
 
@@ -212,6 +211,9 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
             self.fp8_meta["autocast_id_fwd"] = state[8]
             self.fp8_meta["autocast_id_bwd"] = state[9]
             return
+
+        if isinstance(state, torch.Tensor):
+            state = pickle.loads(state.cpu().detach().numpy().tobytes())
 
         # Restore global FP8 buffer states.
         set_global_fp8_buffer(state["global_fp8_buffer"])
