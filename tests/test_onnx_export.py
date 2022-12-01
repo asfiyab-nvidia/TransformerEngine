@@ -174,7 +174,7 @@ def test_export_gelu_fp8(scale_factor):
     (torch.float32, False,   True,     False),
     (torch.float16, False,   True,     False),
     (torch.float32, False,   True,     True),
-    (torch.float16, False,   True,     False),
+    (torch.float16, False,   True,     True),
 
     # For FP8 GEMM GeLU is not used.
     (torch.float32, True,    False,    False),
