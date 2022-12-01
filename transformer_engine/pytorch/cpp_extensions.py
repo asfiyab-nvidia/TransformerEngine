@@ -8,6 +8,7 @@ import torch
 import transformer_engine_extensions as tex
 from .constants import TE_DType
 
+
 def fp8_gemm(
     A: torch.Tensor,
     A_scale_inv: torch.Tensor,
@@ -42,7 +43,7 @@ def fp8_gemm(
 
     out_dtype = tex.DType.kFloat32 if fp32_output else TE_DType[out_dtype]
 
-    output_tensor = torch.ops.tex_ts.te_gemm_ts(
+    _ = torch.ops.tex_ts.te_gemm_ts(
         A,
         A_scale_inv,
         A_fp8_tensor,
@@ -65,7 +66,7 @@ def fp8_gemm(
     )
 
     if return_output:
-        return output_tensor
+        return out
     return None
 
 
@@ -119,7 +120,7 @@ def gemm(
 
     bias = bias if use_bias else empty_tensor
 
-    output_tensor = torch.ops.tex_ts.te_gemm_ts(
+    _ = torch.ops.tex_ts.te_gemm_ts(
         A,
         empty_tensor,
         fp8_index,
@@ -142,7 +143,7 @@ def gemm(
     )
 
     if return_output:
-        return output_tensor, grad_bias, gelu_input
+        return out, grad_bias, gelu_input
     return None, grad_bias, gelu_input
 
 
@@ -266,7 +267,6 @@ def layernorm_fwd_fp8_inf(
     This version of layernorm_fwd_fp8 is specialized for inference, and returns
     only the normalized output.
     """
-
     ret = torch.ops.tex_ts.layernorm_fwd_fp8_ts(
         inp,
         weight,
@@ -286,7 +286,7 @@ def cast_to_fp8(
     otype: tex.DType,
 ) -> torch.Tensor:
     """Cast input to FP8"""
-    out = torch.ops.tex_ts.cast_to_fp8_ts(
+    return torch.ops.tex_ts.cast_to_fp8_ts(
         inp,
         fp8_meta_tensor.scale,
         fp8_meta_tensor.amax_history,
@@ -294,7 +294,6 @@ def cast_to_fp8(
         fp8_tensor,
         otype,
     )
-    return out
 
 
 def cast_from_fp8(
