@@ -58,11 +58,11 @@ at::Tensor cast_from_fp8_ts(const at::Tensor &input,
 }
 
 at::Tensor fp8_gelu_ts(at::Tensor input,
-                      at::Tensor scale,
-                      at::Tensor amax,
-                      at::Tensor scale_inv,
-                      int64_t fp8_tensor,
-                      int64_t otype) {
+                       at::Tensor scale,
+                       at::Tensor amax,
+                       at::Tensor scale_inv,
+                       int64_t fp8_tensor,
+                       int64_t otype) {
 
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
   at::Tensor output = fp8_gelu(input,
@@ -134,27 +134,26 @@ at::Tensor te_gemm_ts(at::Tensor A,
 }
 
 at::Tensor layernorm_fwd_fp8_inf_ts(const at::Tensor &input,
-                                const at::Tensor &weight,
-                                const at::Tensor &bias,
-                                double eps,
-                                at::Tensor scale,
-                                at::Tensor amax,
-                                at::Tensor scale_inv,
-                                int64_t otype) {
+                                    const at::Tensor &weight,
+                                    const at::Tensor &bias,
+                                    double eps,
+                                    at::Tensor scale,
+                                    at::Tensor amax,
+                                    at::Tensor scale_inv,
+                                    int64_t otype) {
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
   float eps_float = (float) eps;
 
-  at::Tensor output = layernorm_fwd_fp8_inf(
-    input,
-    weight,
-    bias,
-    eps_float,
-    scale,
-    amax,
-    scale_inv,
-    otype_arg);
+  at::Tensor output = layernorm_fwd_fp8_inf(input,
+                                            weight,
+                                            bias,
+                                            eps_float,
+                                            scale,
+                                            amax,
+                                            scale_inv,
+                                            otype_arg);
 
-  return output;
+  return output.clone();
 }
 
 TORCH_LIBRARY(tex_ts, m)
