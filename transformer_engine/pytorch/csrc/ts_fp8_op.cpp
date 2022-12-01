@@ -66,11 +66,10 @@ at::Tensor fp8_gelu_ts(at::Tensor input,
 
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
   at::Tensor output = fp8_gelu(input,
-                                scale[fp8_tensor],
-                                amax[0][fp8_tensor],
-                                scale_inv[fp8_tensor],
-                                otype_arg
-                                );
+                               scale[fp8_tensor],
+                               amax[0][fp8_tensor],
+                               scale_inv[fp8_tensor],
+                               otype_arg);
   return output.clone();
 }
 
@@ -128,8 +127,7 @@ at::Tensor te_gemm_ts(at::Tensor A,
           workspace,
           workspaceSize_arg,
           accumulate_arg,
-          use_split_accumulator_arg
-          );
+          use_split_accumulator_arg);
   return D;
 }
 
