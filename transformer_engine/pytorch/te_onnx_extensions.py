@@ -93,5 +93,5 @@ register_custom_op_symbolic('tex_ts::cast_to_fp8_ts', onnx_cast_to_fp8, OPSET)
 register_custom_op_symbolic('tex_ts::cast_from_fp8_ts', onnx_cast_from_fp8, OPSET)
 register_custom_op_symbolic('tex_ts::fp8_gelu_ts', onnx_fp8_gelu, OPSET)
 register_custom_op_symbolic('tex_ts::te_gemm_ts', onnx_fp8_gemm, OPSET)
-register_custom_op_symbolic('tex_ts::layernorm_fwd_fp8_ts', onnx_layernorm_fwd_fp8, OPSET)
+register_custom_op_symbolic('tex_ts::layernorm_fwd_fp8_inf_ts', onnx_layernorm_fwd_fp8, OPSET)
 

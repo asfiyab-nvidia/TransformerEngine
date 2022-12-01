@@ -1,8 +1,7 @@
 #include <torch/script.h>
 #include "extensions.h"
 
-transformer_engine::DType reverse_map_dtype(int64_t dtype)
-{
+transformer_engine::DType reverse_map_dtype(int64_t dtype) {
   switch (dtype)
   {
     case static_cast<int64_t>(transformer_engine::DType::kByte):
@@ -20,10 +19,8 @@ transformer_engine::DType reverse_map_dtype(int64_t dtype)
     case static_cast<int64_t>(transformer_engine::DType::kFloat8E5M2):
         return transformer_engine::DType::kFloat8E5M2;
     default:
-        std::cout<<"Invalid input argument\n";
-        break;
+        NVTE_ERROR("Type not supported.");
   }
-  return transformer_engine::DType::kFloat8E5M2;
 }
 
 
@@ -32,39 +29,31 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           const at::Tensor &amax,
                           const at::Tensor &scale_inv,
                           int64_t fp8_tensor,
-                          int64_t otype
-                          )
-{
-  // otype
+                          int64_t otype) {
+
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
 
-  // invoke TE function
-  at::Tensor output = cast_to_fp8(input,
-                                scale[fp8_tensor],
-                                amax[0][fp8_tensor],
-                                scale_inv[fp8_tensor],
-                                otype_arg
-                                );
+   at::Tensor output =  cast_to_fp8(input,
+                                    scale[fp8_tensor],
+                                    amax[0][fp8_tensor],
+                                    scale_inv[fp8_tensor],
+                                    otype_arg);
   return output.clone();
 }
 
 at::Tensor cast_from_fp8_ts(const at::Tensor &input,
-                              const at::Tensor &scale_inv,
-                              int64_t fp8_tensor,
-                              int64_t itype,
-                              int64_t otype)
-{
-  // itype
+                            const at::Tensor &scale_inv,
+                            int64_t fp8_tensor,
+                            int64_t itype,
+                            int64_t otype) {
+
   transformer_engine::DType itype_arg = reverse_map_dtype(itype);
-  // otype
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
 
-  // invoke TE function
-  at::Tensor output = cast_from_fp8(input,
-                                  scale_inv[fp8_tensor],
-                                  itype_arg,
-                                  otype_arg
-                                );
+   at::Tensor output = cast_from_fp8(input,
+                                     scale_inv[fp8_tensor],
+                                     itype_arg,
+                                     otype_arg);
   return output.clone();
 }
 
@@ -73,9 +62,8 @@ at::Tensor fp8_gelu_ts(at::Tensor input,
                       at::Tensor amax,
                       at::Tensor scale_inv,
                       int64_t fp8_tensor,
-                      int64_t otype
-                      )
-{
+                      int64_t otype) {
+
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
   at::Tensor output = fp8_gelu(input,
                                 scale[fp8_tensor],
@@ -83,7 +71,7 @@ at::Tensor fp8_gelu_ts(at::Tensor input,
                                 scale_inv[fp8_tensor],
                                 otype_arg
                                 );
-  return output;
+  return output.clone();
 }
 
 at::Tensor te_gemm_ts(at::Tensor A,
@@ -104,8 +92,7 @@ at::Tensor te_gemm_ts(at::Tensor A,
                       at::Tensor workspace,
                       int64_t workspaceSize,
                       int64_t accumulate,
-                      int64_t use_split_accumulator)
-{
+                      int64_t use_split_accumulator) {
   // cast inputs to types accepted by te_gemm
   transformer_engine::DType A_type_arg = reverse_map_dtype(A_type);
   bool transa_arg = static_cast<bool>(transa);
@@ -146,19 +133,15 @@ at::Tensor te_gemm_ts(at::Tensor A,
   return D;
 }
 
-at::Tensor layernorm_fwd_fp8_ts(const at::Tensor &input,
+at::Tensor layernorm_fwd_fp8_inf_ts(const at::Tensor &input,
                                 const at::Tensor &weight,
                                 const at::Tensor &bias,
                                 double eps,
                                 at::Tensor scale,
                                 at::Tensor amax,
                                 at::Tensor scale_inv,
-                                int64_t otype)
-{
-  // otype
+                                int64_t otype) {
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
-
-  //eps
   float eps_float = (float) eps;
 
   at::Tensor output = layernorm_fwd_fp8_inf(
@@ -174,12 +157,11 @@ at::Tensor layernorm_fwd_fp8_ts(const at::Tensor &input,
   return output;
 }
 
-// first arg here defines the namespace where the op is registered
 TORCH_LIBRARY(tex_ts, m)
 {
   m.def("cast_to_fp8_ts", &cast_to_fp8_ts);
   m.def("cast_from_fp8_ts", &cast_from_fp8_ts);
   m.def("fp8_gelu_ts", &fp8_gelu_ts);
   m.def("te_gemm_ts", &te_gemm_ts);
-  m.def("layernorm_fwd_fp8_ts", &layernorm_fwd_fp8_ts);
+  m.def("layernorm_fwd_fp8_inf_ts", &layernorm_fwd_fp8_inf_ts);
 }

@@ -267,7 +267,7 @@ def layernorm_fwd_fp8_inf(
     This version of layernorm_fwd_fp8 is specialized for inference, and returns
     only the normalized output.
     """
-    ret = torch.ops.tex_ts.layernorm_fwd_fp8_ts(
+    ret = torch.ops.tex_ts.layernorm_fwd_fp8_inf_ts(
         inp,
         weight,
         bias,
