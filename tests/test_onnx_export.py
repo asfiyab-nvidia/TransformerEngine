@@ -488,12 +488,10 @@ def test_export_layernorm_linear(
 
 
 @pytest.mark.parametrize("use_fp8", [False, True])
-#@pytest.mark.parametrize("bias", [False,True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
 @pytest.mark.parametrize("return_layernorm_output", [False])
 # Todo: cannot handle FP16 for some reason
-#@pytest.mark.parametrize("precision", [torch.float32])
 @pytest.mark.parametrize(
     "precision,     use_bias",[
     (torch.float32, False),
@@ -533,16 +531,17 @@ def test_export_layernorm_mlp(
         validate_result(fname, inp, model, atol=1e-3)
 
 
-test_configs_core_attention = [
+
+@pytest.mark.parametrize(
+    "use_torch, use_mask, attn_mask_type",[
     # Torch tests 2 configs
-    (True, False, None),
-    (True, True, None),
+    (True,      False,    None),
+    (True,      True,     None),
     # TE tests 3 configs
-    (False, False, "causal"), # calls ScaledUpperTriangMaskedSoftmax
-    (False, True, "padding"), # calls ScaledMaskedSoftmax
-    (False, False, "padding"), # calls ScaledSoftmax
-]
-@pytest.mark.parametrize("use_torch, use_mask, attn_mask_type", test_configs_core_attention)
+    (False,     False,    "causal"),  # calls ScaledUpperTriangMaskedSoftmax
+    (False,     True,     "padding"), # calls ScaledMaskedSoftmax
+    (False,     False,    "padding"), # calls ScaledSoftmax
+])
 @pytest.mark.parametrize("attention_softmax_in_fp32", [True, False])
 @pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
 def test_export_core_attention(
@@ -583,7 +582,7 @@ def test_export_core_attention(
                 "_upper_trian_masked" if attn_mask_type=="causal" and not use_torch else \
                 ""
     torch_suffix = "_torch" if use_torch else ""
-    fname = f"te.core_attention{mask_suffix}{torch_suffix}{sm_prec_str}{qk_scaling_str}.onnx"
+    fname = f"te.core_attention{mask_suffix}{torch_suffix}{qk_scaling_str}{sm_prec_str}.onnx"
 
     model = te.transformer.CoreAttention(
         num_attention_heads=num_attention_heads,
