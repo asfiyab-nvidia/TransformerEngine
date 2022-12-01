@@ -533,19 +533,17 @@ def test_export_layernorm_mlp(
 
 
 @pytest.mark.parametrize(
-    "use_torch, use_mask, attn_mask_type",[
-    # Torch tests 2 configs
-    (True,      False,    None),
-    (True,      True,     None),
-    # TE tests 3 configs
-    (False,     False,    "causal"),  # calls ScaledUpperTriangMaskedSoftmax
-    (False,     True,     "padding"), # calls ScaledMaskedSoftmax
-    (False,     False,    "padding"), # calls ScaledSoftmax
+    "precision,     use_mask, attn_mask_type", [
+    (torch.float32, False,    None),      # calls forward_torch_softmax
+    (torch.float32, True,     None),      # calls forward_torch_softmax
+    (torch.float16, False,    "causal"),  # calls ScaledUpperTriangMaskedSoftmax
+    (torch.float16, True,     "padding"), # calls ScaledMaskedSoftmax
+    (torch.float16, False,    "padding"), # calls ScaledSoftmax
 ])
 @pytest.mark.parametrize("attention_softmax_in_fp32", [True, False])
 @pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
 def test_export_core_attention(
-    use_torch: bool,
+    precision: torch.dtype,
     use_mask: bool,
     attn_mask_type: str,
     attention_softmax_in_fp32: bool,
@@ -559,13 +557,9 @@ def test_export_core_attention(
     num_attention_heads = 1
     qkv_size = (2048, 4, num_attention_heads, kv_channels)
 
-    dtype = torch.float16
-    if use_torch:
-        dtype = torch.float32
-
-    query_layer = torch.randn(qkv_size, dtype=dtype, device="cuda")
-    key_layer = torch.randn(qkv_size, dtype=dtype, device="cuda")
-    value_layer = torch.randn(qkv_size, dtype=dtype, device="cuda")
+    query_layer = torch.randn(qkv_size, dtype=precision, device="cuda")
+    key_layer = torch.randn(qkv_size, dtype=precision, device="cuda")
+    value_layer = torch.randn(qkv_size, dtype=precision, device="cuda")
     input_names = ["query", "key", "value"]
     attention_mask = None
     if use_mask:
@@ -578,11 +572,11 @@ def test_export_core_attention(
     sm_prec_str = "_fp32" if attention_softmax_in_fp32 else "_fp16"
     qk_scaling_str = "_qk_scaling" if apply_query_key_layer_scaling else ""
 
-    mask_suffix = "_masked" if use_mask else \
-                "_upper_trian_masked" if attn_mask_type=="causal" and not use_torch else \
+    mask_str = "_masked" if use_mask else \
+                "_upper_trian_masked" if attn_mask_type=="causal" and precision == torch.float16 else \
                 ""
-    torch_suffix = "_torch" if use_torch else ""
-    fname = f"te.core_attention{mask_suffix}{torch_suffix}{qk_scaling_str}{sm_prec_str}.onnx"
+    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    fname = f"te.core_attention{mask_str}{qk_scaling_str}{sm_prec_str}{high_prec_str}.onnx"
 
     model = te.transformer.CoreAttention(
         num_attention_heads=num_attention_heads,
