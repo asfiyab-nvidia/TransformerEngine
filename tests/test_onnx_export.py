@@ -52,8 +52,7 @@ def do_export(
                           input_names=input_names,
                           output_names=output_names,
                           do_constant_folding=True,
-                          operator_export_type=torch.onnx.OperatorExportTypes.ONNX_FALLTHROUGH,
-                          custom_opsets={"tex_ts": 2})
+                          operator_export_type=torch.onnx.OperatorExportTypes.ONNX_FALLTHROUGH)
 
 
 def to_numpy(tensor):
@@ -167,7 +166,15 @@ def test_export_gelu_fp8(scale_factor: float):
     do_export(TestFP8_Gelu(), inp, "te.gelu_fp8.onnx")
 
 
-@pytest.mark.parametrize("scale_factors", [(112, 448,), ])
+def dtype2str(dtype):
+    return {
+        torch.float32: "_fp32",
+        torch.float16: "_fp16",
+        torch.bfloat16: "_bf16",
+    }[dtype]
+
+
+@pytest.mark.parametrize("scale_factors", [(448, 448,), ])
 @pytest.mark.parametrize(
     "precision,     use_fp8, use_bias, use_gelu", [
     (torch.float32, False,   False,    False),
@@ -182,6 +189,7 @@ def test_export_gelu_fp8(scale_factor: float):
     (torch.float16, True,    False,    False),
     # When enabling bias we must use float16 or bfloat16 (because of kernel limitations)
     (torch.float16, True,    True,     False),
+    (torch.bfloat16, True,   True,     False),
 ])
 def test_export_gemm(
     precision, # Precision of inputs, weights, output and bias
@@ -285,7 +293,7 @@ def test_export_gemm(
     fp8_str = "_fp8" if use_fp8 else ""
     bias_str = "_bias" if use_bias else ""
     gelu_str = "_gelu" if use_gelu else ""
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"te.gemm{fp8_str}{bias_str}{gelu_str}{high_prec_str}.onnx"
     if use_fp8:
         model = TestFP8_GEMM(precision, use_bias, use_gelu, scale_factors)
@@ -340,7 +348,7 @@ def test_export_layernorm(scale_factor: float, precision: torch.dtype):
     softmax_defs.ScaledSoftmax,
 ])
 # Softmax kernel only supports FP16 or BF16!
-@pytest.mark.parametrize("precision", [torch.float16])
+@pytest.mark.parametrize("precision", [torch.float16, torch.bfloat16])
 def test_export_softmax(softmax_def, precision):
     class Test_Softmax(nn.Module):
         def __init__(self, softmax_function, mask_inp=False):
@@ -387,22 +395,27 @@ def test_export_softmax(softmax_def, precision):
     validate_result(fname, inp, model, atol=1e-3)
 
 
-@pytest.mark.parametrize("use_fp8", [False,True])
+@pytest.mark.parametrize("use_fp8", [False, True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
 @pytest.mark.parametrize(
     "precision,     use_bias",[
     (torch.float32, False),
     (torch.float32, True),
-    # Todo: cannot configure FP16 when bias is disabled
+    # Todo: cannot configure FP16/BF16 when bias is disabled -
+    # AssertionError: Data type for activations and buffers must match when outside of autocasted region
+    # (torch.float16, False),
     (torch.float16, True),
-    #(torch.float16, False),
+    #(torch.bfloat16, False),
+    # Todo: cannot configure BF16 when bias is enabled (ORT issue?)
+    #(torch.bfloat16, True),
 ])
 def test_export_linear(
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
-    precision: torch.dtype):
+    precision: torch.dtype
+):
     # Set dimensions (these are arbitrary).
     in_features = 64
     out_features = 256
@@ -411,7 +424,7 @@ def test_export_linear(
     inp = torch.randn(hidden_size, in_features, device="cuda", dtype=precision)
     fp8_str = "_fp8" if use_fp8 else ""
     bias_str = "_bias" if use_bias else ""
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"te.linear{fp8_str}{bias_str}{high_prec_str}.onnx"
     model = te.Linear(
         in_features,
@@ -434,9 +447,9 @@ def test_export_linear(
     "precision,     use_bias",[
     (torch.float32, False),
     (torch.float32, True),
-    # Todo: cannot configure FP16 when bias is disabled
     (torch.float16, True),
-    #(torch.float16, False),
+    # Todo: cannot configure FP16 when bias is disabled
+    # (torch.float16, False),
 ])
 def test_export_layernorm_linear(
     use_fp8: bool,
@@ -477,8 +490,8 @@ def test_export_layernorm_linear(
     "precision,     use_bias",[
     (torch.float32, False),
     (torch.float32, True),
-    # Todo: cannot configure FP16 when bias is disabled
     (torch.float16, True),
+    # Todo: cannot configure FP16 when bias is disabled
     #(torch.float16, False),
 ])
 def test_export_layernorm_mlp(
@@ -510,7 +523,6 @@ def test_export_layernorm_mlp(
     do_export(model, inp, fname, use_fp8)
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
-
 
 
 @pytest.mark.parametrize(
@@ -586,7 +598,7 @@ test_configs_multihead_attention = [
 @pytest.mark.parametrize("return_layernorm_output", [False])
 @pytest.mark.parametrize("attention_type", [
     "self",
-    #"cross" # TODO: handle this
+    #"cross" # TODO: handle this ORT error
 ])
 @pytest.mark.parametrize("fuse_qkv_params", [False, True])
 def test_export_multihead_attention(
