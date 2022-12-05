@@ -33,7 +33,7 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
 
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
 
-   at::Tensor output =  cast_to_fp8(input,
+  at::Tensor output =  cast_to_fp8(input,
                                     scale[fp8_tensor],
                                     amax[0][fp8_tensor],
                                     scale_inv[fp8_tensor],
@@ -50,7 +50,7 @@ at::Tensor cast_from_fp8_ts(const at::Tensor &input,
   transformer_engine::DType itype_arg = reverse_map_dtype(itype);
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
 
-   at::Tensor output = cast_from_fp8(input,
+  at::Tensor output = cast_from_fp8(input,
                                      scale_inv[fp8_tensor],
                                      itype_arg,
                                      otype_arg);
