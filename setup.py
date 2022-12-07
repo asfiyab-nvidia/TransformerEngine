@@ -314,4 +314,7 @@ setup(
     ext_modules=ext_modules,
     cmdclass={"build_ext": TEBuildExtension},
     license_files=("LICENSE",),
+    install_requires=[
+        'onnxruntime',
+    ]
 )
