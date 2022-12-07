@@ -559,6 +559,7 @@ def test_export_core_attention(
         # Generate a random mask with 50% probability for 0 or 1.
         probs = 0.5 * torch.ones(qkv_size[1], qkv_size[2], qkv_size[0], qkv_size[0], device="cuda")
         attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        attention_mask = attention_mask if precision == torch.float32 else attention_mask.half()
         input_names.append("attention_mask")
     inp = (query_layer, key_layer, value_layer, attention_mask)
 

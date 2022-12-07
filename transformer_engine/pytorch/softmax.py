@@ -213,7 +213,7 @@ class FusedScaleMaskSoftmax(nn.Module):
             and attn_batches % 4 == 0  # np * b must be divisor of 4
         ):
             if 0 <= sk <= 4096:
-                batch_per_block = self.get_batch_per_block(sk)
+                batch_per_block = self.get_batch_per_block(int(sk))
 
                 if self.attn_mask_type == "causal":
                     if attn_batches % batch_per_block == 0:
