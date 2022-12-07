@@ -111,6 +111,11 @@ std::vector<at::Tensor> layernorm_fwd(const at::Tensor &input,
                                       float eps
 );
 
+at::Tensor layernorm_fwd_inf(const at::Tensor &input,
+                             const at::Tensor &weight,
+                             const at::Tensor &bias,
+                             float eps
+);
 
 at::Tensor cast_to_fp8(const at::Tensor &input,
                        const at::Tensor &scale,

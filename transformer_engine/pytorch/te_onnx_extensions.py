@@ -93,9 +93,32 @@ def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, 
     return fp8_ln
 
 
+@symbolic_helper.parse_args("v", "v", "v", "f", "v", "v", "v",  "i")
+def onnx_layernorm_fwd(g, input, weight, bias, eps):
+    normalized_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
+    if normalized_shape is None:
+        ndim = torch.onnx.symbolic_helper._get_tensor_rank(input)
+        assert ndim is not None
+        normalized_shape = list(range(0, ndim))
+    # Normalization axis = 0, so normalized_shape uses all dims except dim = 0
+    normalized_shape = normalized_shape[1:]
+
+    ln = torch.onnx.symbolic_opset9.layer_norm(
+        g,
+        input,
+        normalized_shape,
+        weight,
+        bias,
+        eps,
+        False # cudnn_enable (not relevant)
+    )
+    return ln
+
+
 register_custom_op_symbolic('tex_ts::cast_to_fp8_ts', onnx_cast_to_fp8, OPSET)
 register_custom_op_symbolic('tex_ts::cast_from_fp8_ts', onnx_cast_from_fp8, OPSET)
 register_custom_op_symbolic('tex_ts::fp8_gelu_ts', onnx_fp8_gelu, OPSET)
 register_custom_op_symbolic('tex_ts::te_gemm_ts', onnx_te_gemm, OPSET)
 register_custom_op_symbolic('tex_ts::layernorm_fwd_fp8_inf_ts', onnx_layernorm_fwd_fp8, OPSET)
+register_custom_op_symbolic('tex_ts::layernorm_fwd_inf_ts', onnx_layernorm_fwd, OPSET)
 

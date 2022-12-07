@@ -451,6 +451,16 @@ std::vector<at::Tensor> layernorm_fwd(const at::Tensor &input,
     return {ln_out, mu, rsigma};
 }
 
+at::Tensor layernorm_fwd_inf(const at::Tensor &input,
+                             const at::Tensor &weight,
+                             const at::Tensor &bias,
+                             float eps
+) {
+    // This is a specialized version of layernorm_fwd, optimized for inference,
+    // which only returns the normalized output.
+    std::vector<at::Tensor> out = layernorm_fwd(input, weight, bias, eps);
+    return out[0];
+}
 
 at::Tensor cast_to_fp8(const at::Tensor &input,
                        const at::Tensor &scale,

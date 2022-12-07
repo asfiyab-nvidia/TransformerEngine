@@ -73,6 +73,7 @@ from .cpp_extensions import (
     fp8_cast_transpose_bgrad_dgelu_fused,
     layernorm_fwd_fp8,
     layernorm_fwd_fp8_inf,
+    layernorm_fwd_inf,
     cast_to_fp8,
     cast_from_fp8,
 )
@@ -622,9 +623,8 @@ class _LayerNormLinear(torch.autograd.Function):
                         inputmat, ln_weight, ln_bias, eps
                     )
                 else:
-                    normalized_shape = inputmat.shape[1:]
-                    ln_out_return, mu, rsigma = F.layer_norm(
-                        inputmat, normalized_shape, ln_weight, ln_bias, eps
+                    ln_out_return, mu, rsigma = layernorm_fwd_inf(
+                        inputmat, ln_weight, ln_bias, eps
                     ), None, None
 
                 ln_out = cast_to_fp8(
@@ -637,9 +637,8 @@ class _LayerNormLinear(torch.autograd.Function):
             if is_training:
                 ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
             else:
-                normalized_shape = inputmat.shape[1:]
-                ln_out, mu, rsigma = F.layer_norm(
-                    inputmat, normalized_shape, ln_weight, ln_bias, eps
+                ln_out, mu, rsigma = layernorm_fwd_inf(
+                        inputmat, ln_weight, ln_bias, eps
                 ), None, None
             ln_out_return = ln_out
 
@@ -1822,9 +1821,8 @@ class _LayerNormMLP(torch.autograd.Function):
             if is_training:
                 ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
             else:
-                normalized_shape = inputmat.shape[1:]
-                ln_out, mu, rsigma = F.layer_norm(
-                            inputmat, normalized_shape, ln_weight, ln_bias, eps
+                ln_out, mu, rsigma = layernorm_fwd_inf(
+                        inputmat, ln_weight, ln_bias, eps
                         ), None, None
 
             ln_out_return = ln_out

@@ -306,7 +306,7 @@ def test_export_gemm(
 
 @pytest.mark.parametrize("scale_factor", [448])
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
-def test_export_layernorm(scale_factor: float, precision: torch.dtype):
+def test_export_layernorm_fp8(scale_factor: float, precision: torch.dtype):
     class TestFP8_Layernorm(nn.Module):
         def forward(self, inp):
             # inputs to layernorm_fwd_fp8_ts
@@ -340,6 +340,31 @@ def test_export_layernorm(scale_factor: float, precision: torch.dtype):
     inp = torch.randn(hidden_size, in_features, device="cuda")
     high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
     do_export(TestFP8_Layernorm(), inp, f"te.layernorm_fwd_fp8{high_prec_str}.onnx")
+
+@pytest.mark.parametrize("scale_factor", [448])
+@pytest.mark.parametrize("precision", [torch.float32, torch.float16])
+def test_export_layernorm(scale_factor: float, precision: torch.dtype):
+    class Test_Layernorm(nn.Module):
+        def forward(self, inp):
+            # inputs to layernorm_fwd_ts
+            weight = torch.randn(64, 64, dtype=precision, device="cuda")
+            bias = torch.randn(64, dtype=precision, device="cuda")
+            eps = 1e-4 # An arbitrary small value
+
+            ret = texcpp.layernorm_fwd_inf(
+                inp,
+                weight,
+                bias,
+                eps)
+
+            return ret
+
+    # Set dimensions (these are arbitrary).
+    in_features = 64
+    hidden_size = 64
+    inp = torch.randn(hidden_size, in_features, device="cuda")
+    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    do_export(Test_Layernorm(), inp, f"te.layernorm_fwd{high_prec_str}.onnx")
 
 
 @pytest.mark.parametrize("softmax_def", [

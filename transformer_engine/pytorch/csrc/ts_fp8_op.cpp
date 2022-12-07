@@ -154,6 +154,20 @@ at::Tensor layernorm_fwd_fp8_inf_ts(const at::Tensor &input,
   return output.clone();
 }
 
+at::Tensor layernorm_fwd_inf_ts(const at::Tensor &input,
+                                const at::Tensor &weight,
+                                const at::Tensor &bias,
+                                double eps) {
+  float eps_float = (float) eps;
+
+  at::Tensor output = layernorm_fwd_inf(input,
+                                        weight,
+                                        bias,
+                                        eps_float);
+
+  return output.clone();
+}
+
 TORCH_LIBRARY(tex_ts, m)
 {
   m.def("cast_to_fp8_ts", &cast_to_fp8_ts);
@@ -161,4 +175,5 @@ TORCH_LIBRARY(tex_ts, m)
   m.def("fp8_gelu_ts", &fp8_gelu_ts);
   m.def("te_gemm_ts", &te_gemm_ts);
   m.def("layernorm_fwd_fp8_inf_ts", &layernorm_fwd_fp8_inf_ts);
+  m.def("layernorm_fwd_inf_ts", &layernorm_fwd_inf_ts);
 }
