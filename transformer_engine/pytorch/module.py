@@ -547,7 +547,14 @@ class TransformerEngineBaseModule(torch.nn.Module, ABC):
         """Needs override."""
 
 
-def layernorm_linear_fwd(
+
+class _LayerNormLinear(torch.autograd.Function):
+    """LayerNormLinear semi-top level module
+    Calls custom cuda extensions.
+    """
+
+    @staticmethod
+    def forward(
         ctx,
         inp: torch.Tensor,
         ln_weight: torch.Tensor,
@@ -570,7 +577,6 @@ def layernorm_linear_fwd(
         return_layernorm_output: bool,
         is_training: bool
     ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
-
         # Make sure input dimensions are compatible
         in_features = ln_weight.numel()
         assert inp.shape[-1] == in_features, "GEMM not possible"
@@ -736,60 +742,6 @@ def layernorm_linear_fwd(
             return out, ln_out_return.view_as(inp)
         return out
 
-
-
-class _LayerNormLinear(torch.autograd.Function):
-    """LayerNormLinear semi-top level module
-    Calls custom cuda extensions.
-    """
-
-    @staticmethod
-    def forward(
-        ctx,
-        inp: torch.Tensor,
-        ln_weight: torch.Tensor,
-        ln_bias: torch.Tensor,
-        weight: torch.Tensor,
-        weight_fp8: Union[torch.Tensor, None],
-        weight_t_fp8: Union[torch.Tensor, None],
-        bias: torch.Tensor,
-        use_bias: bool,
-        eps: float,
-        is_first_microbatch: Union[bool, None],
-        fp8: bool,
-        fp8_meta: Dict[str, Any],
-        fuse_wgrad_accumulation: bool,
-        tp_group: Union[dist_group_type, None],
-        sequence_parallel: bool,
-        tensor_parallel: bool,
-        activation_dtype: torch.dtype,
-        parallel_mode: Union[str, None],
-        return_layernorm_output: bool,
-        is_training: bool
-    ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
-        return layernorm_linear_fwd(
-            ctx,
-            inp,
-            ln_weight,
-            ln_bias,
-            weight,
-            weight_fp8,
-            weight_t_fp8,
-            bias,
-            use_bias,
-            eps,
-            is_first_microbatch,
-            fp8,
-            fp8_meta,
-            fuse_wgrad_accumulation,
-            tp_group,
-            sequence_parallel,
-            tensor_parallel,
-            activation_dtype,
-            parallel_mode,
-            return_layernorm_output,
-            is_training,
-        )
 
     @staticmethod
     def backward(
@@ -1197,7 +1149,7 @@ class LayerNormLinear(TransformerEngineBaseModule):
             fwd_fn = _LayerNormLinear.apply
             args = []
         else:
-            fwd_fn = layernorm_linear_fwd
+            fwd_fn = _LayerNormLinear.forward
             args = [None]
         args += (
             inp,
@@ -1239,159 +1191,6 @@ class LayerNormLinear(TransformerEngineBaseModule):
             return out, ln_out
         return out
 
-
-def linear_fwd(
-    ctx,
-    weight: torch.Tensor,
-    weight_fp8: Union[torch.Tensor, None],
-    weight_t_fp8: Union[torch.Tensor, None],
-    inp: torch.Tensor,
-    bias: torch.Tensor,
-    use_bias: bool,
-    is_first_microbatch: Union[bool, None],
-    fp8: bool,
-    fp8_meta: Dict[str, Any],
-    fuse_wgrad_accumulation: bool,
-    tp_group: Union[dist_group_type, None],
-    sequence_parallel: bool,
-    tensor_parallel: bool,
-    activation_dtype: torch.dtype,
-    parallel_mode: Union[str, None],
-    is_training: bool,
-) -> torch.Tensor:
-    # Make sure input dimensions are compatible
-    in_features = weight.shape[-1]
-    assert inp.shape[-1] == in_features, "GEMM not possible"
-    inputmat = inp.view((-1, in_features))
-
-    update_fp8_weights = is_first_microbatch is None or is_first_microbatch
-
-    # Cast for native AMP
-    inputmat = cast_if_needed(inputmat, activation_dtype)
-    inputmat_no_fp8 = inputmat
-
-    if fp8:
-        fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
-
-        if not fp8_meta["recipe"].override_linear_precision.wgrad:
-            if is_training:
-                inputmat, inputmat_t = fp8_cast_transpose_fused(
-                    inputmat,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
-                    fp8_dtype_forward,
-                )
-            else:
-                inputmat = cast_to_fp8(
-                    inputmat,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
-                    fp8_dtype_forward,
-                )
-        else:
-            inputmat, inputmat_t = cast_to_fp8(
-                inputmat,
-                fp8_meta["scaling_fwd"],
-                tex.FP8FwdTensors.GEMM1_INPUT,
-                fp8_dtype_forward,
-            ), None
-
-    # Column Parallel Linear
-    if parallel_mode == "column" and sequence_parallel:
-        inputmat_total, _ = gather_along_first_dim(inputmat, tp_group)
-    else:
-        inputmat_total = inputmat
-
-    if fp8:
-        bias_dtype = (
-            torch.bfloat16
-            if activation_dtype == torch.float32
-            else activation_dtype
-        )
-        bias = cast_if_needed(bias, bias_dtype) if use_bias else bias
-
-        if update_fp8_weights:
-            if is_training:
-                fp8_cast_transpose_fused(
-                    weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=weight_fp8,
-                    transpose_out=weight_t_fp8,
-                )
-            else:
-                weight_t_fp8 = None
-                weight_fp8 = cast_to_fp8(
-                    weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                )
-
-        out = fp8_gemm(
-            weight_fp8,
-            fp8_meta["scaling_fwd"].scale_inv,
-            tex.FP8FwdTensors.GEMM1_WEIGHT,
-            fp8_dtype_forward,
-            inputmat,
-            fp8_meta["scaling_fwd"].scale_inv,
-            tex.FP8FwdTensors.GEMM1_INPUT,
-            fp8_dtype_forward,
-            activation_dtype,
-            get_workspace(),
-            bias=bias,
-            use_bias=use_bias,
-            use_split_accumulator=_2X_ACC_FPROP,
-        )
-    else:
-        # Cast for native AMP
-        weight = cast_if_needed(weight, activation_dtype)
-        bias = cast_if_needed(bias, activation_dtype) if use_bias else bias
-
-        out, _, _ = gemm(
-            weight,
-            inputmat_total,
-            activation_dtype,
-            get_workspace(),
-            bias=bias,
-            use_bias=use_bias,
-        )
-
-    if is_training:
-        ctx.save_for_backward(
-            inputmat_no_fp8
-            if not fp8 or fp8_meta["recipe"].override_linear_precision.wgrad
-            else None,
-            inputmat_t
-            if fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
-            else None,
-            weight,
-            weight_t_fp8,
-            fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
-        )
-        ctx.activation_dtype = activation_dtype
-        ctx.fp8 = fp8
-        ctx.fp8_meta = fp8_meta
-        ctx.fuse_wgrad_accumulation = fuse_wgrad_accumulation
-        ctx.is_first_microbatch = is_first_microbatch
-        ctx.use_bias = use_bias
-        ctx.sequence_parallel = sequence_parallel
-        ctx.tensor_parallel = tensor_parallel
-        ctx.inp_shape = inp.shape
-        ctx.parallel_mode = parallel_mode
-        ctx.tp_group = tp_group
-
-    # Row Parallel Linear
-    if parallel_mode == "row" and sequence_parallel:
-        out, _ = reduce_scatter_along_first_dim(out, tp_group)
-    elif parallel_mode == "row" and tensor_parallel:
-        out, _ = allreduce(out, tp_group)
-
-    # [*, in_features] -> [*, out_features] except first dimension changes for SP
-    return out.view(-1, *inp.shape[1:-1], out.shape[-1])
-
-
 class _Linear(torch.autograd.Function):
     """Linear semi-top level module
     Calls custom cuda extensions.
@@ -1417,25 +1216,138 @@ class _Linear(torch.autograd.Function):
         parallel_mode: Union[str, None],
         is_training: bool,
     ) -> torch.Tensor:
-        return linear_fwd(
-            ctx,
-            weight,
-            weight_fp8,
-            weight_t_fp8,
-            inp,
-            bias,
-            use_bias,
-            is_first_microbatch,
-            fp8,
-            fp8_meta,
-            fuse_wgrad_accumulation,
-            tp_group,
-            sequence_parallel,
-            tensor_parallel,
-            activation_dtype,
-            parallel_mode,
-            is_training,
-        )
+        # Make sure input dimensions are compatible
+        in_features = weight.shape[-1]
+        assert inp.shape[-1] == in_features, "GEMM not possible"
+        inputmat = inp.view((-1, in_features))
+
+        update_fp8_weights = is_first_microbatch is None or is_first_microbatch
+
+        # Cast for native AMP
+        inputmat = cast_if_needed(inputmat, activation_dtype)
+        inputmat_no_fp8 = inputmat
+
+        if fp8:
+            fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
+
+            if not fp8_meta["recipe"].override_linear_precision.wgrad:
+                if is_training:
+                    inputmat, inputmat_t = fp8_cast_transpose_fused(
+                        inputmat,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
+                else:
+                    inputmat = cast_to_fp8(
+                        inputmat,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
+            else:
+                inputmat, inputmat_t = cast_to_fp8(
+                    inputmat,
+                    fp8_meta["scaling_fwd"],
+                    tex.FP8FwdTensors.GEMM1_INPUT,
+                    fp8_dtype_forward,
+                ), None
+
+        # Column Parallel Linear
+        if parallel_mode == "column" and sequence_parallel:
+            inputmat_total, _ = gather_along_first_dim(inputmat, tp_group)
+        else:
+            inputmat_total = inputmat
+
+        if fp8:
+            bias_dtype = (
+                torch.bfloat16
+                if activation_dtype == torch.float32
+                else activation_dtype
+            )
+            bias = cast_if_needed(bias, bias_dtype) if use_bias else bias
+
+            if update_fp8_weights:
+                if is_training:
+                    fp8_cast_transpose_fused(
+                        weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=weight_fp8,
+                        transpose_out=weight_t_fp8,
+                    )
+                else:
+                    weight_t_fp8 = None
+                    weight_fp8 = cast_to_fp8(
+                        weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                    )
+
+            out = fp8_gemm(
+                weight_fp8,
+                fp8_meta["scaling_fwd"].scale_inv,
+                tex.FP8FwdTensors.GEMM1_WEIGHT,
+                fp8_dtype_forward,
+                inputmat,
+                fp8_meta["scaling_fwd"].scale_inv,
+                tex.FP8FwdTensors.GEMM1_INPUT,
+                fp8_dtype_forward,
+                activation_dtype,
+                get_workspace(),
+                bias=bias,
+                use_bias=use_bias,
+                use_split_accumulator=_2X_ACC_FPROP,
+            )
+        else:
+            # Cast for native AMP
+            weight = cast_if_needed(weight, activation_dtype)
+            bias = cast_if_needed(bias, activation_dtype) if use_bias else bias
+
+            out, _, _ = gemm(
+                weight,
+                inputmat_total,
+                activation_dtype,
+                get_workspace(),
+                bias=bias,
+                use_bias=use_bias,
+            )
+
+        if is_training:
+            ctx.save_for_backward(
+                inputmat_no_fp8
+                if not fp8 or fp8_meta["recipe"].override_linear_precision.wgrad
+                else None,
+                inputmat_t
+                if fp8 and not fp8_meta["recipe"].override_linear_precision.wgrad
+                else None,
+                weight,
+                weight_t_fp8,
+                fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
+            )
+            ctx.activation_dtype = activation_dtype
+            ctx.fp8 = fp8
+            ctx.fp8_meta = fp8_meta
+            ctx.fuse_wgrad_accumulation = fuse_wgrad_accumulation
+            ctx.is_first_microbatch = is_first_microbatch
+            ctx.use_bias = use_bias
+            ctx.sequence_parallel = sequence_parallel
+            ctx.tensor_parallel = tensor_parallel
+            ctx.inp_shape = inp.shape
+            ctx.parallel_mode = parallel_mode
+            ctx.tp_group = tp_group
+
+        # Row Parallel Linear
+        if parallel_mode == "row" and sequence_parallel:
+            out, _ = reduce_scatter_along_first_dim(out, tp_group)
+        elif parallel_mode == "row" and tensor_parallel:
+            out, _ = allreduce(out, tp_group)
+
+        # [*, in_features] -> [*, out_features] except first dimension changes for SP
+        return out.view(-1, *inp.shape[1:-1], out.shape[-1])
+
 
     @staticmethod
     def backward(
@@ -1794,7 +1706,7 @@ class Linear(TransformerEngineBaseModule):
             linear_fn = _Linear.apply
             args = []
         else:
-            linear_fn = linear_fwd
+            linear_fn = _Linear.forward
             args = [None]
         args += (
             weight if weight is not None else self.weight,
@@ -1823,256 +1735,6 @@ class Linear(TransformerEngineBaseModule):
         if self.return_bias:
             return out, cast_if_needed(bias_tensor, self.activation_dtype)
         return out
-
-
-def layernorm_mlp_fwd(
-    ctx,
-    inp: torch.Tensor,
-    ln_weight: torch.Tensor,
-    ln_bias: torch.Tensor,
-    fc1_weight: torch.Tensor,
-    fc1_weight_fp8: Union[torch.Tensor, None],
-    fc1_weight_t_fp8: Union[torch.Tensor, None],
-    fc1_bias: torch.Tensor,
-    fc2_weight: torch.Tensor,
-    fc2_weight_fp8: Union[torch.Tensor, None],
-    fc2_weight_t_fp8: Union[torch.Tensor, None],
-    fc2_bias: torch.Tensor,
-    use_bias: bool,
-    eps: float,
-    is_first_microbatch: Union[bool, None],
-    fp8: bool,
-    fp8_meta: Dict[str, Any],
-    fuse_wgrad_accumulation: bool,
-    tp_group: Union[dist_group_type, None],
-    sequence_parallel: bool,
-    tensor_parallel: bool,
-    activation_dtype: torch.dtype,
-    return_layernorm_output: bool,
-    bias_gelu_nvfusion: bool,
-    set_parallel_mode: bool,
-    is_training: bool
-) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
-    # Make sure input dimensions are compatible
-    in_features = ln_weight.numel()
-    assert inp.shape[-1] == in_features, "GEMM not possible"
-    inputmat = inp.view((-1, in_features))
-
-    update_fp8_weights = is_first_microbatch is None or is_first_microbatch
-
-    # Cast for native AMP
-    inputmat = cast_if_needed(inputmat, activation_dtype)
-    ln_weight = cast_if_needed(ln_weight, activation_dtype)
-    ln_bias = cast_if_needed(ln_bias, activation_dtype)
-
-    # If residual connection is after LN, we need `ln_out`
-    # tensor in higher precision, this comes at the cost
-    # of an extra fp8 cast.
-    if fp8:
-        fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
-        if not return_layernorm_output:
-            if is_training:
-                ln_out, mu, rsigma = layernorm_fwd_fp8(
-                    inputmat,
-                    ln_weight,
-                    ln_bias,
-                    eps,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_INPUT,
-                    fp8_dtype_forward,
-                )
-            else:
-                ln_out = layernorm_fwd_fp8_inf(
-                    inputmat,
-                    ln_weight,
-                    ln_bias,
-                    eps,
-                    fp8_meta["scaling_fwd"],
-                    fp8_dtype_forward,
-                )
-        else:
-            ln_out_return, mu, rsigma = tex.layernorm_fwd(
-                inputmat, ln_weight, ln_bias, eps
-            )
-            ln_out = cast_to_fp8(
-                ln_out_return,
-                fp8_meta["scaling_fwd"],
-                tex.FP8FwdTensors.GEMM1_INPUT,
-                fp8_dtype_forward,
-            )
-    else:
-        if is_training:
-            ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
-        else:
-            normalized_shape = inputmat.shape[1:]
-            ln_out, mu, rsigma = F.layer_norm(
-                        inputmat, normalized_shape, ln_weight, ln_bias, eps
-                    ), None, None
-
-        ln_out_return = ln_out
-    # Column Parallel Linear
-    if set_parallel_mode and sequence_parallel:
-        ln_out_total, _ = gather_along_first_dim(ln_out, tp_group)
-    else:
-        ln_out_total = ln_out
-
-    if fp8:
-        bias_dtype = (
-            torch.bfloat16
-            if activation_dtype == torch.float32
-            else activation_dtype
-        )
-        fc1_bias = cast_if_needed(fc1_bias, bias_dtype)
-        fc2_bias = cast_if_needed(fc2_bias, bias_dtype) if use_bias else fc2_bias
-
-        if update_fp8_weights:
-            if is_training:
-                fp8_cast_transpose_fused(
-                    fc1_weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=fc1_weight_fp8,
-                    transpose_out=fc1_weight_t_fp8,
-                )
-
-                fp8_cast_transpose_fused(
-                    fc2_weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM2_WEIGHT,
-                    fp8_dtype_forward,
-                    cast_out=fc2_weight_fp8,
-                    transpose_out=fc2_weight_t_fp8,
-                )
-            else:
-                fc1_weight_t_fp8 = None
-                fc1_weight_fp8 = cast_to_fp8(
-                    fc1_weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM1_WEIGHT,
-                    fp8_dtype_forward,
-                )
-                fc2_weight_t_fp8 = None
-                fc2_weight_fp8 = cast_to_fp8(
-                    fc2_weight,
-                    fp8_meta["scaling_fwd"],
-                    tex.FP8FwdTensors.GEMM2_WEIGHT,
-                    fp8_dtype_forward,
-                )
-
-        fc1_out = fp8_gemm(
-            fc1_weight_fp8,
-            fp8_meta["scaling_fwd"].scale_inv,
-            tex.FP8FwdTensors.GEMM1_WEIGHT,
-            fp8_dtype_forward,
-            ln_out_total,
-            fp8_meta["scaling_fwd"].scale_inv,
-            tex.FP8FwdTensors.GEMM1_INPUT,
-            fp8_dtype_forward,
-            activation_dtype,
-            get_workspace(),
-            bias=fc1_bias,
-            use_bias=True,
-            use_split_accumulator=_2X_ACC_FPROP,
-        )
-
-        gelu_out = fp8_gelu(
-            fc1_out,
-            fp8_meta["scaling_fwd"],
-            tex.FP8FwdTensors.GEMM2_INPUT,
-            fp8_dtype_forward,
-        )
-
-        fc2_out = fp8_gemm(
-            fc2_weight_fp8,
-            fp8_meta["scaling_fwd"].scale_inv,
-            tex.FP8FwdTensors.GEMM2_WEIGHT,
-            fp8_dtype_forward,
-            gelu_out,
-            fp8_meta["scaling_fwd"].scale_inv,
-            tex.FP8FwdTensors.GEMM2_INPUT,
-            fp8_dtype_forward,
-            activation_dtype,
-            get_workspace(),
-            bias=fc2_bias,
-            use_bias=use_bias,
-            use_split_accumulator=_2X_ACC_FPROP,
-        )
-    else:
-        # Cast for native AMP
-        fc1_weight = cast_if_needed(fc1_weight, activation_dtype)
-        fc2_weight = cast_if_needed(fc2_weight, activation_dtype)
-        fc1_bias = cast_if_needed(fc1_bias, activation_dtype)
-        fc2_bias = (
-            cast_if_needed(fc2_bias, activation_dtype) if use_bias else fc2_bias
-        )
-
-        fc1_outputs = gemm(
-            fc1_weight,
-            ln_out_total,
-            activation_dtype,
-            get_workspace(),
-            bias=fc1_bias,
-            use_bias=not bias_gelu_nvfusion,
-            gelu=not bias_gelu_nvfusion,
-        )
-
-        if bias_gelu_nvfusion and is_training:
-            fc1_out, _, _ = fc1_outputs
-            gelu_out = bias_gelu_fused(fc1_out, fc1_bias)
-        else:
-            gelu_out, _, fc1_out = fc1_outputs
-
-        fc2_out, _, _ = gemm(
-            fc2_weight,
-            gelu_out,
-            activation_dtype,
-            get_workspace(),
-            bias=fc2_bias,
-            use_bias=use_bias,
-        )
-    if is_training:
-        ctx.save_for_backward(
-            inputmat,
-            ln_weight,
-            mu,
-            rsigma,
-            ln_out,
-            fc1_out,
-            gelu_out,
-            fc1_weight,
-            fc1_weight_t_fp8,
-            fc2_weight,
-            fc2_weight_t_fp8,
-            fc1_bias,
-            fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
-        )
-        ctx.activation_dtype = activation_dtype
-        ctx.fp8 = fp8
-        ctx.fp8_meta = fp8_meta
-        ctx.fuse_wgrad_accumulation = fuse_wgrad_accumulation
-        ctx.is_first_microbatch = is_first_microbatch
-        ctx.use_bias = use_bias
-        ctx.sequence_parallel = sequence_parallel
-        ctx.tensor_parallel = tensor_parallel
-        ctx.inp_shape = inp.shape
-        ctx.tp_group = tp_group
-        ctx.bias_gelu_nvfusion = bias_gelu_nvfusion
-        ctx.return_layernorm_output = return_layernorm_output
-        ctx.set_parallel_mode = set_parallel_mode
-
-    # Row Parallel Linear
-    if set_parallel_mode and sequence_parallel:
-        fc2_out, _ = reduce_scatter_along_first_dim(fc2_out, tp_group)
-    elif set_parallel_mode and tensor_parallel:
-        fc2_out, _ = allreduce(fc2_out, tp_group)
-
-    # [*, in_features] -> [*, out_features] except first dimension changes for SP
-    fc2_out = fc2_out.view(-1, *inp.shape[1:-1], fc2_out.shape[-1])
-
-    if return_layernorm_output:
-        return fc2_out, ln_out_return.view_as(inp)
-    return fc2_out
 
 
 class _LayerNormMLP(torch.autograd.Function):
@@ -2109,34 +1771,227 @@ class _LayerNormMLP(torch.autograd.Function):
         set_parallel_mode: bool,
         is_training: bool
     ) -> Union[Tuple[torch.Tensor, ...], torch.Tensor]:
-        return layernorm_mlp_fwd(
-            ctx,
-            inp,
-            ln_weight,
-            ln_bias,
-            fc1_weight,
-            fc1_weight_fp8,
-            fc1_weight_t_fp8,
-            fc1_bias,
-            fc2_weight,
-            fc2_weight_fp8,
-            fc2_weight_t_fp8,
-            fc2_bias,
-            use_bias,
-            eps,
-            is_first_microbatch,
-            fp8,
-            fp8_meta,
-            fuse_wgrad_accumulation,
-            tp_group,
-            sequence_parallel,
-            tensor_parallel,
-            activation_dtype,
-            return_layernorm_output,
-            bias_gelu_nvfusion,
-            set_parallel_mode,
-            is_training
-        )
+        # Make sure input dimensions are compatible
+        in_features = ln_weight.numel()
+        assert inp.shape[-1] == in_features, "GEMM not possible"
+        inputmat = inp.view((-1, in_features))
+
+        update_fp8_weights = is_first_microbatch is None or is_first_microbatch
+
+        # Cast for native AMP
+        inputmat = cast_if_needed(inputmat, activation_dtype)
+        ln_weight = cast_if_needed(ln_weight, activation_dtype)
+        ln_bias = cast_if_needed(ln_bias, activation_dtype)
+
+        # If residual connection is after LN, we need `ln_out`
+        # tensor in higher precision, this comes at the cost
+        # of an extra fp8 cast.
+        if fp8:
+            fp8_dtype_forward = get_fp8_te_dtype(fp8_meta["recipe"], fprop_tensor=True)
+            if not return_layernorm_output:
+                if is_training:
+                    ln_out, mu, rsigma = layernorm_fwd_fp8(
+                        inputmat,
+                        ln_weight,
+                        ln_bias,
+                        eps,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_INPUT,
+                        fp8_dtype_forward,
+                    )
+                else:
+                    ln_out = layernorm_fwd_fp8_inf(
+                        inputmat,
+                        ln_weight,
+                        ln_bias,
+                        eps,
+                        fp8_meta["scaling_fwd"],
+                        fp8_dtype_forward,
+                    )
+            else:
+                ln_out_return, mu, rsigma = tex.layernorm_fwd(
+                    inputmat, ln_weight, ln_bias, eps
+                )
+                ln_out = cast_to_fp8(
+                    ln_out_return,
+                    fp8_meta["scaling_fwd"],
+                    tex.FP8FwdTensors.GEMM1_INPUT,
+                    fp8_dtype_forward,
+                )
+        else:
+            if is_training:
+                ln_out, mu, rsigma = tex.layernorm_fwd(inputmat, ln_weight, ln_bias, eps)
+            else:
+                normalized_shape = inputmat.shape[1:]
+                ln_out, mu, rsigma = F.layer_norm(
+                            inputmat, normalized_shape, ln_weight, ln_bias, eps
+                        ), None, None
+
+            ln_out_return = ln_out
+        # Column Parallel Linear
+        if set_parallel_mode and sequence_parallel:
+            ln_out_total, _ = gather_along_first_dim(ln_out, tp_group)
+        else:
+            ln_out_total = ln_out
+
+        if fp8:
+            bias_dtype = (
+                torch.bfloat16
+                if activation_dtype == torch.float32
+                else activation_dtype
+            )
+            fc1_bias = cast_if_needed(fc1_bias, bias_dtype)
+            fc2_bias = cast_if_needed(fc2_bias, bias_dtype) if use_bias else fc2_bias
+
+            if update_fp8_weights:
+                if is_training:
+                    fp8_cast_transpose_fused(
+                        fc1_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=fc1_weight_fp8,
+                        transpose_out=fc1_weight_t_fp8,
+                    )
+
+                    fp8_cast_transpose_fused(
+                        fc2_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM2_WEIGHT,
+                        fp8_dtype_forward,
+                        cast_out=fc2_weight_fp8,
+                        transpose_out=fc2_weight_t_fp8,
+                    )
+                else:
+                    fc1_weight_t_fp8 = None
+                    fc1_weight_fp8 = cast_to_fp8(
+                        fc1_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM1_WEIGHT,
+                        fp8_dtype_forward,
+                    )
+                    fc2_weight_t_fp8 = None
+                    fc2_weight_fp8 = cast_to_fp8(
+                        fc2_weight,
+                        fp8_meta["scaling_fwd"],
+                        tex.FP8FwdTensors.GEMM2_WEIGHT,
+                        fp8_dtype_forward,
+                    )
+
+            fc1_out = fp8_gemm(
+                fc1_weight_fp8,
+                fp8_meta["scaling_fwd"].scale_inv,
+                tex.FP8FwdTensors.GEMM1_WEIGHT,
+                fp8_dtype_forward,
+                ln_out_total,
+                fp8_meta["scaling_fwd"].scale_inv,
+                tex.FP8FwdTensors.GEMM1_INPUT,
+                fp8_dtype_forward,
+                activation_dtype,
+                get_workspace(),
+                bias=fc1_bias,
+                use_bias=True,
+                use_split_accumulator=_2X_ACC_FPROP,
+            )
+
+            gelu_out = fp8_gelu(
+                fc1_out,
+                fp8_meta["scaling_fwd"],
+                tex.FP8FwdTensors.GEMM2_INPUT,
+                fp8_dtype_forward,
+            )
+
+            fc2_out = fp8_gemm(
+                fc2_weight_fp8,
+                fp8_meta["scaling_fwd"].scale_inv,
+                tex.FP8FwdTensors.GEMM2_WEIGHT,
+                fp8_dtype_forward,
+                gelu_out,
+                fp8_meta["scaling_fwd"].scale_inv,
+                tex.FP8FwdTensors.GEMM2_INPUT,
+                fp8_dtype_forward,
+                activation_dtype,
+                get_workspace(),
+                bias=fc2_bias,
+                use_bias=use_bias,
+                use_split_accumulator=_2X_ACC_FPROP,
+            )
+        else:
+            # Cast for native AMP
+            fc1_weight = cast_if_needed(fc1_weight, activation_dtype)
+            fc2_weight = cast_if_needed(fc2_weight, activation_dtype)
+            fc1_bias = cast_if_needed(fc1_bias, activation_dtype)
+            fc2_bias = (
+                cast_if_needed(fc2_bias, activation_dtype) if use_bias else fc2_bias
+            )
+
+            fc1_outputs = gemm(
+                fc1_weight,
+                ln_out_total,
+                activation_dtype,
+                get_workspace(),
+                bias=fc1_bias,
+                use_bias=not bias_gelu_nvfusion,
+                gelu=not bias_gelu_nvfusion,
+            )
+
+            if bias_gelu_nvfusion and is_training:
+                fc1_out, _, _ = fc1_outputs
+                gelu_out = bias_gelu_fused(fc1_out, fc1_bias)
+            else:
+                gelu_out, _, fc1_out = fc1_outputs
+
+            fc2_out, _, _ = gemm(
+                fc2_weight,
+                gelu_out,
+                activation_dtype,
+                get_workspace(),
+                bias=fc2_bias,
+                use_bias=use_bias,
+            )
+        if is_training:
+            ctx.save_for_backward(
+                inputmat,
+                ln_weight,
+                mu,
+                rsigma,
+                ln_out,
+                fc1_out,
+                gelu_out,
+                fc1_weight,
+                fc1_weight_t_fp8,
+                fc2_weight,
+                fc2_weight_t_fp8,
+                fc1_bias,
+                fp8_meta["scaling_fwd"].scale_inv.clone() if fp8 else None,
+            )
+            ctx.activation_dtype = activation_dtype
+            ctx.fp8 = fp8
+            ctx.fp8_meta = fp8_meta
+            ctx.fuse_wgrad_accumulation = fuse_wgrad_accumulation
+            ctx.is_first_microbatch = is_first_microbatch
+            ctx.use_bias = use_bias
+            ctx.sequence_parallel = sequence_parallel
+            ctx.tensor_parallel = tensor_parallel
+            ctx.inp_shape = inp.shape
+            ctx.tp_group = tp_group
+            ctx.bias_gelu_nvfusion = bias_gelu_nvfusion
+            ctx.return_layernorm_output = return_layernorm_output
+            ctx.set_parallel_mode = set_parallel_mode
+
+        # Row Parallel Linear
+        if set_parallel_mode and sequence_parallel:
+            fc2_out, _ = reduce_scatter_along_first_dim(fc2_out, tp_group)
+        elif set_parallel_mode and tensor_parallel:
+            fc2_out, _ = allreduce(fc2_out, tp_group)
+
+        # [*, in_features] -> [*, out_features] except first dimension changes for SP
+        fc2_out = fc2_out.view(-1, *inp.shape[1:-1], fc2_out.shape[-1])
+
+        if return_layernorm_output:
+            return fc2_out, ln_out_return.view_as(inp)
+        return fc2_out
+
 
     @staticmethod
     def backward(
@@ -2702,7 +2557,7 @@ class LayerNormMLP(TransformerEngineBaseModule):
             fwd_fn = _LayerNormMLP.apply
             args = []
         else:
-            fwd_fn = layernorm_mlp_fwd
+            fwd_fn = _LayerNormMLP.forward
             args = [None]
         args += (
             inp,
