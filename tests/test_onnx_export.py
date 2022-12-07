@@ -402,6 +402,7 @@ def test_export_softmax(softmax_def, precision):
         # Generate a random mask with 50% probability for 0 or 1.
         probs = 0.5 * torch.ones(hidden_size, 1, in_features, in_features, device="cuda")
         mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        mask = mask if precision == torch.float32 else mask.half()
         input_names.append("mask")
 
         input_tensor = torch.randn(hidden_size, in_features, in_features, in_features, device="cuda")
@@ -662,6 +663,7 @@ def test_export_multihead_attention(
         # Generate a random mask with 50% probability for 0 or 1.
         probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda")
         attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        attention_mask = attention_mask if precision == torch.float32 else attention_mask.half()
         input_names.append("attention_mask")
     inp = (hidden_states, attention_mask)
 
@@ -718,6 +720,7 @@ def test_export_transformer_layer(
         # Generate a random mask with 50% probability for 0 or 1.
         probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda")
         attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
+        attention_mask = attention_mask if precision == torch.float32 else attention_mask.half()
         input_names.append("attention_mask")
     inp = (input_tensor, attention_mask)
 
