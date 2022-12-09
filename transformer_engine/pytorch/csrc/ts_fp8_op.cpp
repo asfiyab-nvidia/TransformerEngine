@@ -1,3 +1,9 @@
+/*************************************************************************
+ * Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *
+ * See LICENSE for license information.
+ ************************************************************************/
+
 #include <torch/script.h>
 #include "extensions.h"
 

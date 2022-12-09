@@ -1,7 +1,6 @@
-"""
-ONNX symbolic functions for Transformer Engine
-"""
-
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# See LICENSE for license information.
 
 import torch
 from torch.onnx import symbolic_helper, register_custom_op_symbolic

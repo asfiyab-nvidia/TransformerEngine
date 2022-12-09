@@ -1,8 +1,6 @@
-"""
-This file contains tests for exporting TransformerEngine models to ONNX.
-"""
-
-
+# Copyright (c) 2022, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# See LICENSE for license information.
 import pytest
 import warnings
 import numpy as np
