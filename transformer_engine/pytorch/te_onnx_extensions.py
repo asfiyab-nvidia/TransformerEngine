@@ -14,8 +14,9 @@ tests/test_onnx_export.py::test_export_cast_ops[112]
 """
 
 import torch
-from torch.onnx import symbolic_helper, register_custom_op_symbolic
+from torch.onnx import symbolic_helper, register_custom_op_symbolic, _type_utils
 import transformer_engine_extensions as tex
+import torch._C._onnx as _C_onnx
 
 # This file registers custom op symbolic ONNX functions and does not export any symbols.
 __all__ = []
@@ -28,18 +29,29 @@ VER = 1
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_cast_to_fp8(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
+    if input.type().scalarType() == "Half":
+        input = g.op("Cast", input, to_i=_C_onnx.TensorProtoDataType.FLOAT)
     return g.op("trt::TRT_FP8QuantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
+
 
 @symbolic_helper.parse_args("v", "v", "i", "i", "i")
 def onnx_cast_from_fp8(g, input, scale_inv, fp8_tensor, itype, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
-    return g.op("trt::TRT_FP8DequantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.float32).with_sizes(output_shape))
+    out = g.op("trt::TRT_FP8DequantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.float32).with_sizes(output_shape))
+    if otype == int(tex.DType.kFloat16):
+        out = g.op("Cast", out, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
+    return out
+
 
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_fp8_gelu(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     gelu = torch.onnx.symbolic_opset9.gelu(g, input)
-    return g.op("trt::TRT_FP8QuantizeLinear", gelu, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
+    if input.type().scalarType() == "Half":
+        gelu = g.op("Cast", gelu, to_i=_C_onnx.TensorProtoDataType.FLOAT)
+    out = g.op("trt::TRT_FP8QuantizeLinear", gelu, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
+    return out
+
 
 @symbolic_helper.parse_args("v", "v", "i", "i", "i",
                              "v", "v", "i", "i", "i",
@@ -66,6 +78,7 @@ def onnx_te_gemm(
     workspaceSize,
     accumulate,
     use_split_accumulator):
+    is_fp16 = input.type().scalarType() == "Half"
     if input_type == int(tex.DType.kFloat8E4M3):
         input = g.op("trt::TRT_FP8DequantizeLinear", input, input_scale_inverse)
 
@@ -78,10 +91,18 @@ def onnx_te_gemm(
     bias_empty = torch.onnx.symbolic_helper._get_tensor_sizes(bias) == empty_tensor_size
     pre_gelu_out_empty = torch.onnx.symbolic_helper._get_tensor_sizes(pre_gelu_out) == empty_tensor_size
     if pre_gelu_out_empty and not bias_empty:
+        if bias.type().scalarType() == "Half":
+            output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
         output = g.op('Add', output, bias)
     elif not pre_gelu_out_empty and not bias_empty:
+        if bias.type().scalarType() == "Half":
+            output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
         output = g.op('Add', output, bias)
         output = torch.onnx.symbolic_opset9.gelu(g, output)
+    # else:
+    #     if is_fp16:
+    #         output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
+
     return output
 
 
@@ -105,6 +126,8 @@ def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, 
         False # cudnn_enable (not relevant)
     )
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
+    if input.type().scalarType() == "Half":
+        ln = g.op("Cast", ln, to_i=_C_onnx.TensorProtoDataType.FLOAT)
     fp8_ln = g.op("trt::TRT_FP8QuantizeLinear", ln, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
     return fp8_ln
 
