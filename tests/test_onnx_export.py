@@ -6,9 +6,11 @@
 This file contains tests for exporting TransformerEngine models to ONNX.
 """
 
+import os
 import pytest
 import warnings
 import numpy as np
+import math
 import onnxruntime as ort
 import torch
 from torch import nn as nn
@@ -25,7 +27,6 @@ from transformer_engine.pytorch.utils import get_default_init_method
 
 # Shared library implementing custom FP8 Q/DQ operators for ONNX Runtime (ORT)
 ORT_CUSTOM_OPS_LIB = "./libcustom_ort_fp8_qdq_ops.so"
-
 
 # ScaledUpperTriangMaskedSoftmax is exported via ONNX::Trilu which was introduced in opset 14.
 TRILU_OPSET = 14
@@ -70,11 +71,20 @@ def to_numpy(tensor):
     return tensor.cpu().detach().numpy()
 
 
+def set_layer_scale(module: torch.nn.Module, scale: float ):
+    module.fp8_init()
+    module.fp8_meta["scaling_fwd"].scale = torch.ones(
+        2, dtype=torch.float32, device="cuda") / scale
+    module.fp8_meta["scaling_fwd"].scale_inv = torch.ones(
+        2, dtype=torch.float32, device="cuda") * scale
+
+
 def validate_result(
     fname: str,
     inps: Union[Tuple[torch.Tensor], torch.Tensor],
     model: torch.nn.Module,
-    atol: float,
+    atol: float=1.e-8, #0,
+    rtol: float=1.e-5,#1.e-9,
     max_errors_printed: int=10,
     is_fp8: bool=False,
 ):
@@ -85,6 +95,8 @@ def validate_result(
         if is_fp8:
             # For FP8 validation with ORT we need to load our custom FP8 Q/DQ extension.
             so1 = ort.SessionOptions()
+            if not os.path.exists(ORT_CUSTOM_OPS_LIB):
+                raise FileNotFoundError(f"Unable to find {ORT_CUSTOM_OPS_LIB}")
             so1.register_custom_ops_library(ORT_CUSTOM_OPS_LIB)
             print("registered custom FP8 Q/DQ ops!")
 
@@ -95,7 +107,6 @@ def validate_result(
         else:
             s = ort.InferenceSession(fname)
         return s
-
 
     def create_ort_input_dict(session, inps):
         inp_dict = {}
@@ -120,8 +131,14 @@ def validate_result(
     assert len(onnx_outputs) == len(torch_outputs)
     for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
         torch_output = to_numpy(torch_output)
-        # Compare ORT and PyTorch outputs
-        ac = ~np.isclose(onnx_output, torch_output, atol=atol)
+
+        # Compare ORT and PyTorch outputs.
+        # Prefer math.isclose to np.isclose (see https://github.com/numpy/numpy/issues/10161).
+        # math.isclose: abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
+        # np.isclose: abs(a - b) <= (atol + rtol * abs(b))
+        ac = ~np.isclose(onnx_output, torch_output, atol=atol, rtol=rtol)
+        #ac = [math.isclose(x, y, abs_tol=atol, rel_tol=rtol) for x,y in zip(onnx_output.flatten(), torch_output.flatten())]
+
         mismatches = ac.nonzero()
         mismatched_ids = [loc for loc in zip(*mismatches)]
         if mismatched_ids:
@@ -130,8 +147,12 @@ def validate_result(
             print(onnx_output.shape)
             nb_vals = min(len(mismatched_ids), max_errors_printed)
             print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
+            abs_err = abs(onnx_output - torch_output)
             for loc in mismatched_ids[:nb_vals]:
-                print(f"{onnx_output[loc]} -- {torch_output[loc]}")
+                ref = torch_output[loc]
+                print(f"{onnx_output[loc]} -- {torch_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
+                #print(f"{onnx_output[loc]} -- {torch_output[loc]}")
+                #print(f"{onnx_output[loc]} -- {torch_output[loc]} fp32_truth={inps[loc]}")
             raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
 
 
@@ -143,7 +164,7 @@ def create_meta(scale_factor: float, size: int=1):
     return meta
 
 
-def dtype2str(dtype):
+def dtype2str(dtype: torch.dtype):
     return {
         torch.float32: "_fp32",
         torch.float16: "_fp16",
@@ -151,66 +172,99 @@ def dtype2str(dtype):
     }[dtype]
 
 
-@pytest.mark.parametrize("scale_factor", [448, 112])
-def test_export_cast_ops(scale_factor: float):
+def as_te_type(dtype: torch.dtype):
+    return {
+        torch.float32: tex.DType.kFloat32,
+        torch.float16: tex.DType.kFloat16,
+        torch.bfloat16: tex.DType.kBFloat16,
+    }[dtype]
+
+
+@pytest.mark.parametrize("scale_factor, atol", [
+    (1, 1e-7),
+    (224, 1e-7)
+])
+@pytest.mark.parametrize("precision", [torch.float32, torch.float16])
+def test_export_cast_ops(scale_factor: float, atol: float, precision: torch.dtype):
     class TestFP8_QDQ(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fp8_tensor = 0
+            self.meta = create_meta(scale_factor)
+            self.highprec_type = as_te_type(precision)
+            self.fp8_type = tex.DType.kFloat8E4M3
+
         def forward(self, inp):
-            fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT
-            meta = create_meta(scale_factor)
-            input_type = tex.DType.kFloat32
-            output_type = tex.DType.kFloat8E4M3
+            ret = cast_to_fp8(
+                inp,
+                self.meta,
+                self.fp8_tensor,
+                self.fp8_type)
 
-            ret = cast_to_fp8(inp,
-                              meta,
-                              fp8_tensor,
-                              output_type)
-
-            ret = cast_from_fp8(ret,
-                                meta,
-                                fp8_tensor,
-                                output_type, # input to cast_to_fp8 is FP8 type
-                                input_type)
+            ret = cast_from_fp8(
+                ret,
+                self.meta,
+                self.fp8_tensor,
+                self.fp8_type,
+                self.highprec_type)
             return ret
+
     # Set dimensions (these are arbitrary).
     in_features = 64
     hidden_size = 256
-    inp = torch.randn(hidden_size, in_features, device="cuda")
-    fname = f"te.cast_fp8.s_{scale_factor}.onnx"
+    inp = torch.randn(hidden_size, in_features, device="cuda", dtype=precision)
+    high_prec_str = dtype2str(precision)
+    fname = f"te.cast_fp8.s_{scale_factor}{high_prec_str}.onnx"
     model = TestFP8_QDQ()
     do_export(model, inp, fname)
-    validate_result(fname, inp, model, atol=1e-1, is_fp8=True)
+    validate_result(fname, inp, model, atol=atol, is_fp8=True)
 
 
-@pytest.mark.parametrize("scale_factor", [448])
-def test_export_gelu_fp8(scale_factor: float):
+@pytest.mark.parametrize("scale_factor", [56])
+@pytest.mark.parametrize("precision", [torch.float32, torch.float16])
+def test_export_gelu_fp8(scale_factor: float, precision: torch.dtype):
     class TestFP8_Gelu(nn.Module):
-        def forward(self, inp):
-            fp8_tensor = tex.FP8FwdTensors.GEMM1_INPUT
-            meta = create_meta(scale_factor)
-            output_type = tex.DType.kFloat8E4M3
+        def __init__(self):
+            super().__init__()
+            self.fp8_tensor = 0
+            self.meta = create_meta(scale_factor)
+            self.highprec_type = as_te_type(precision)
+            self.fp8_type = tex.DType.kFloat8E4M3
 
-            ret = fp8_gelu(inp,
-                           meta,
-                           fp8_tensor,
-                           output_type)
-            ret = cast_from_fp8(ret,
-                    meta,
-                    fp8_tensor,
-                    output_type,
-                    tex.DType.kFloat32)
+        def forward(self, inp):
+            if False:
+                ret = torch.nn.functional.gelu(inp)
+                ret = cast_to_fp8(
+                    inp,
+                    self.meta,
+                    self.fp8_tensor,
+                    self.fp8_type)
+            else:
+                ret = fp8_gelu(
+                    inp,
+                    self.meta,
+                    self.fp8_tensor,
+                    self.fp8_type)
+            ret = cast_from_fp8(
+                ret,
+                self.meta,
+                self.fp8_tensor,
+                self.fp8_type,
+                self.highprec_type)
             return ret
 
     # Set dimensions (these are arbitrary).
     in_features = 64
     hidden_size = 256
     inp = torch.randn(hidden_size, in_features, device="cuda")
-    fname = "te.gelu_fp8.onnx"
+    high_prec_str = dtype2str(precision)
+    fname = f"te.gelu_fp8{high_prec_str}.onnx"
     model = TestFP8_Gelu()
     do_export(model, inp, fname)
-    validate_result(fname, inp, model, atol=1e-1, is_fp8=True)
+    validate_result(fname, inp, model, rtol=1e-1, atol=1e-1, is_fp8=True)
 
 
-@pytest.mark.parametrize("scale_factors", [(448, 448,), ])
+@pytest.mark.parametrize("scale_factors", [(224, 224,), ])
 @pytest.mark.parametrize(
     "precision,     use_fp8, use_bias, use_gelu", [
     (torch.float32, False,   False,    False),
@@ -335,14 +389,14 @@ def test_export_gemm(
         model = TestFP8_GEMM(precision, use_bias, use_gelu, scale_factors)
         do_export(model, (inp, weight), fname, use_fp8)
         if precision not in (torch.bfloat16, torch.float16):
-            validate_result(fname, (inp, weight), model, atol=1e-1, is_fp8=True)
+            validate_result(fname, (inp, weight), model, rtol=1e-2, atol=1e-2, is_fp8=True)
     else:
         model = Test_GEMM(precision, use_bias, use_gelu)
         do_export(model, (inp, weight), fname, use_fp8)
-        validate_result(fname, (inp, weight), model, atol=1e-1)
+        validate_result(fname, (inp, weight), model, rtol=1e-2, atol=1e-2)
 
 
-@pytest.mark.parametrize("scale_factor", [448])
+@pytest.mark.parametrize("scale_factor", [448, 112])
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
 def test_export_layernorm(scale_factor: float, precision: torch.dtype):
     # Set dimensions (these are arbitrary).
@@ -378,12 +432,12 @@ def test_export_layernorm(scale_factor: float, precision: torch.dtype):
             return ret
 
     inp = torch.randn(*inp_shape, device="cuda", dtype=precision)
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_fwd_fp8{high_prec_str}.onnx"
     model = TestFP8_Layernorm()
     do_export(model, inp, fname)
-    if precision not in (torch.bfloat16, torch.float16):
-        validate_result(fname, inp, model, atol=1e-1, is_fp8=True)
+    if precision not in (torch.bfloat16, ):
+        validate_result(fname, inp, model, atol=1e-5, is_fp8=True)
 
 @pytest.mark.parametrize("scale_factor", [448])
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
@@ -457,13 +511,14 @@ def test_export_softmax(softmax_def, precision):
         kernel_str = "te.ScaledSoftmax"
         model = Test_Softmax(softmax_def)
     input_tensor = input_tensor if precision == torch.float32 else input_tensor.half()
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"{kernel_str}{high_prec_str}.onnx"
     inp = (input_tensor, mask)
     do_export(model, inp, fname, input_names=input_names)
     validate_result(fname, inp, model, atol=1e-3)
 
 
+@pytest.mark.parametrize("scale_factor", [1])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
@@ -480,6 +535,7 @@ def test_export_softmax(softmax_def, precision):
     # (torch.bfloat16, True),
 ])
 def test_export_linear(
+    scale_factor: float,
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -495,21 +551,25 @@ def test_export_linear(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.linear{fp8_str}{bias_str}{high_prec_str}.onnx"
-    model = te.Linear(
-        in_features,
-        out_features,
-        bias=use_bias,
-        return_bias=return_bias,
-        params_dtype=precision
-    ).to(device='cuda')
-    do_export(model, inp, fname, use_fp8)
+    with te.fp8_autocast(enabled=use_fp8):
+        model = te.Linear(
+            in_features,
+            out_features,
+            bias=use_bias,
+            return_bias=return_bias,
+            params_dtype=precision
+        ).to(device='cuda')
+        if use_fp8:
+            set_layer_scale(model, scale_factor)
+        do_export(model, inp, fname, use_fp8)
 
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
-    elif precision not in (torch.bfloat16, torch.float16):
-        validate_result(fname, inp, model, atol=1e-1, is_fp8=use_fp8)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        elif precision not in (torch.bfloat16, ):
+            validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
 
 
+@pytest.mark.parametrize("scale_factor", [112])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
@@ -523,6 +583,7 @@ def test_export_linear(
     # (torch.float16, False),
 ])
 def test_export_layernorm_linear(
+    scale_factor: float,
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -537,21 +598,27 @@ def test_export_layernorm_linear(
     inp = torch.randn(in_features, out_features, device="cuda", dtype=precision)
     fp8_str = "_fp8" if use_fp8 else ""
     bias_str = "_bias" if use_bias else ""
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_linear{fp8_str}{bias_str}{high_prec_str}.onnx"
-    model = te.LayerNormLinear(
-        hidden_size,
-        3 * hidden_size,
-        bias=use_bias,
-        return_bias=return_bias,
-        return_layernorm_output=return_layernorm_output,
-        params_dtype=precision,
-    ).to(device='cuda')
-    do_export(model, inp, fname, use_fp8)
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
+    with te.fp8_autocast(enabled=use_fp8):
+        model = te.LayerNormLinear(
+            hidden_size,
+            3 * hidden_size,
+            bias=use_bias,
+            return_bias=return_bias,
+            return_layernorm_output=return_layernorm_output,
+            params_dtype=precision,
+        ).to(device='cuda')
+        if use_fp8:
+            set_layer_scale(model, scale_factor)
+        do_export(model, inp, fname, use_fp8)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        elif precision not in (torch.bfloat16,):
+            validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
 
-# Fails
+
+@pytest.mark.parametrize("scale_factor", [112])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Todo: handle case of True
 @pytest.mark.parametrize("return_bias", [False])
@@ -566,6 +633,7 @@ def test_export_layernorm_linear(
     #(torch.float16, False),
 ])
 def test_export_layernorm_mlp(
+    scale_factor: float,
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -581,21 +649,24 @@ def test_export_layernorm_mlp(
     inp = torch.randn(in_features, out_features, device="cuda", dtype=precision)
     fp8_str = "_fp8" if use_fp8 else ""
     bias_str = "_bias" if use_bias else ""
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_mlp{fp8_str}{bias_str}{high_prec_str}.onnx"
-    model = te.LayerNormMLP(
-        hidden_size,
-        ffn_hidden_size,
-        bias=use_bias,
-        return_bias=return_bias,
-        return_layernorm_output=return_layernorm_output,
-        params_dtype=precision,
-    ).to(device='cuda')
-    do_export(model, inp, fname, use_fp8)
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
-    # elif precision != torch.float16:
-    #     validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
+    with te.fp8_autocast(enabled=use_fp8):
+        model = te.LayerNormMLP(
+            hidden_size,
+            ffn_hidden_size,
+            bias=use_bias,
+            return_bias=return_bias,
+            return_layernorm_output=return_layernorm_output,
+            params_dtype=precision,
+        ).to(device='cuda')
+        if use_fp8:
+            set_layer_scale(model, scale_factor)
+        do_export(model, inp, fname, use_fp8)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        else:
+            validate_result(fname, inp, model, atol=5e-1, is_fp8=use_fp8)
 
 
 @pytest.mark.parametrize(
@@ -640,7 +711,7 @@ def test_export_core_attention(
     mask_str = "_masked" if use_mask else \
                 "_upper_trian_masked" if attn_mask_type=="causal" and precision == torch.float16 else \
                 ""
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
+    high_prec_str = dtype2str(precision)
     fname = f"te.core_attention{mask_str}{qk_scaling_str}{sm_prec_str}{high_prec_str}.onnx"
 
     model = te.transformer.CoreAttention(
@@ -785,3 +856,5 @@ def test_export_transformer_layer(
     do_export(model, inp, fname, use_fp8)
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
+    elif precision != torch.float16:
+        validate_result(fname, inp, model, atol=2e-1, is_fp8=use_fp8)
