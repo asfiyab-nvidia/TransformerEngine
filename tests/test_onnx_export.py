@@ -67,8 +67,7 @@ def do_export(
 
 
 def to_numpy(tensor):
-    # TODO: investigate reason for detach()
-    return tensor.cpu().detach().numpy()
+    return tensor.cpu().numpy()
 
 
 def set_layer_scale(module: torch.nn.Module, scale: float ):
@@ -520,8 +519,7 @@ def test_export_softmax(softmax_def, precision):
 
 @pytest.mark.parametrize("scale_factor", [1])
 @pytest.mark.parametrize("use_fp8", [False, True])
-# Todo: handle case of True
-@pytest.mark.parametrize("return_bias", [False])
+@pytest.mark.parametrize("return_bias", [False, True])
 @pytest.mark.parametrize(
     "precision,     use_bias",[
     (torch.float32, False),
@@ -580,7 +578,7 @@ def test_export_linear(
     (torch.float32, True),
     (torch.float16, True),
     # Todo: cannot configure FP16 when bias is disabled
-    # (torch.float16, False),
+    #(torch.float16, False),
 ])
 def test_export_layernorm_linear(
     scale_factor: float,

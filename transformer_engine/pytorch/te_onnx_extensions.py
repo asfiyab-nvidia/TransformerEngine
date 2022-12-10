@@ -78,7 +78,7 @@ def onnx_te_gemm(
     workspaceSize,
     accumulate,
     use_split_accumulator):
-    is_fp16 = input.type().scalarType() == "Half"
+    is_fp16 = bias.type().scalarType() == "Half"
     if input_type == int(tex.DType.kFloat8E4M3):
         input = g.op("trt::TRT_FP8DequantizeLinear", input, input_scale_inverse)
 
@@ -90,19 +90,19 @@ def onnx_te_gemm(
     empty_tensor_size = [0]
     bias_empty = torch.onnx.symbolic_helper._get_tensor_sizes(bias) == empty_tensor_size
     pre_gelu_out_empty = torch.onnx.symbolic_helper._get_tensor_sizes(pre_gelu_out) == empty_tensor_size
-    if pre_gelu_out_empty and not bias_empty:
-        if bias.type().scalarType() == "Half":
+    if not bias_empty:
+        if pre_gelu_out_empty:
+            if is_fp16:
+                output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
+            output = g.op('Add', output, bias)
+        else:
+            if is_fp16:
+                output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
+            output = g.op('Add', output, bias)
+            output = torch.onnx.symbolic_opset9.gelu(g, output)
+    else:
+        if is_fp16:
             output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
-        output = g.op('Add', output, bias)
-    elif not pre_gelu_out_empty and not bias_empty:
-        if bias.type().scalarType() == "Half":
-            output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
-        output = g.op('Add', output, bias)
-        output = torch.onnx.symbolic_opset9.gelu(g, output)
-    # else:
-    #     if is_fp16:
-    #         output = g.op("Cast", output, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
-
     return output
 
 
