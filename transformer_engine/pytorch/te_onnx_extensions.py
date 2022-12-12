@@ -26,18 +26,22 @@ __all__ = []
 VER = 1
 
 
+def make_op_name(op_name: str) -> str:
+    return "trt::" + op_name
+    
+
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_cast_to_fp8(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     if input.type().scalarType() == "Half":
         input = g.op("Cast", input, to_i=_C_onnx.TensorProtoDataType.FLOAT)
-    return g.op("trt::TRT_FP8QuantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
+    return g.op(make_op_name("TRT_FP8QuantizeLinear"), input, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
 
 
 @symbolic_helper.parse_args("v", "v", "i", "i", "i")
 def onnx_cast_from_fp8(g, input, scale_inv, fp8_tensor, itype, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
-    out = g.op("trt::TRT_FP8DequantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.float32).with_sizes(output_shape))
+    out = g.op(make_op_name("TRT_FP8DequantizeLinear"), input, scale_inv).setType(input.type().with_dtype(torch.float32).with_sizes(output_shape))
     if otype == int(tex.DType.kFloat16):
         out = g.op("Cast", out, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
     return out
@@ -49,7 +53,7 @@ def onnx_fp8_gelu(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     gelu = torch.onnx.symbolic_opset9.gelu(g, input)
     if input.type().scalarType() == "Half":
         gelu = g.op("Cast", gelu, to_i=_C_onnx.TensorProtoDataType.FLOAT)
-    out = g.op("trt::TRT_FP8QuantizeLinear", gelu, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
+    out = g.op(make_op_name("TRT_FP8QuantizeLinear"), gelu, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
     return out
 
 
@@ -80,10 +84,10 @@ def onnx_te_gemm(
     use_split_accumulator):
     is_fp16 = bias.type().scalarType() == "Half"
     if input_type == int(tex.DType.kFloat8E4M3):
-        input = g.op("trt::TRT_FP8DequantizeLinear", input, input_scale_inverse)
+        input = g.op(make_op_name("TRT_FP8DequantizeLinear"), input, input_scale_inverse)
 
     if weight_type == int(tex.DType.kFloat8E4M3):
-        weight = g.op("trt::TRT_FP8DequantizeLinear", weight, weight_scale_inverse)
+        weight = g.op(make_op_name("TRT_FP8DequantizeLinear"), weight, weight_scale_inverse)
 
     output = g.op("Gemm", input, weight, transA_i=trans_input, transB_i=trans_weight)
 
@@ -128,7 +132,7 @@ def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, 
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     if input.type().scalarType() == "Half":
         ln = g.op("Cast", ln, to_i=_C_onnx.TensorProtoDataType.FLOAT)
-    fp8_ln = g.op("trt::TRT_FP8QuantizeLinear", ln, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
+    fp8_ln = g.op(make_op_name("TRT_FP8QuantizeLinear"), ln, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
     return fp8_ln
 
 

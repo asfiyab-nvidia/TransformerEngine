@@ -25,7 +25,10 @@ import transformer_engine.pytorch.softmax as softmax_defs
 from transformer_engine.pytorch.utils import get_default_init_method
 
 
-# Shared library implementing custom FP8 Q/DQ operators for ONNX Runtime (ORT)
+# Directory where generated ONNX test models are stored.
+ONNX_FILES_DIR = "./gen_onnx_models"
+
+# Shared library implementing custom FP8 Q/DQ operators for ONNX Runtime (ORT).
 ORT_CUSTOM_OPS_LIB = "./libcustom_ort_fp8_qdq_ops.so"
 
 # ScaledUpperTriangMaskedSoftmax is exported via ONNX::Trilu which was introduced in opset 14.
@@ -47,7 +50,7 @@ def do_export(
     """Export to ONNX"""
     fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.E4M3)
 
-    with torch.no_grad(), te.fp8_autocast(enabled=use_fp8, fp8_recipe=fp8_recipe), warnings.catch_warnings():
+    with torch.inference_mode(), te.fp8_autocast(enabled=use_fp8, fp8_recipe=fp8_recipe), warnings.catch_warnings():
         warnings.filterwarnings(
             action='ignore',
             category=torch.jit.TracerWarning,
@@ -55,6 +58,8 @@ def do_export(
         )
 
         model.cuda().eval()
+        os.makedirs(ONNX_FILES_DIR, exist_ok=True)
+        fname = os.path.join(ONNX_FILES_DIR, fname)
         torch.onnx.export(model,
                           inp if isinstance(inp, list) or isinstance(inp, tuple) else (inp,),
                           fname,
@@ -119,6 +124,7 @@ def validate_result(
         return inp_dict
 
     # Run ORT session and TE model.
+    fname = os.path.join(ONNX_FILES_DIR, fname)
     ort_s = create_ort_session(fname, is_fp8)
     onnx_outputs = ort_s.run(None, input_feed=create_ort_input_dict(ort_s, inps))
     torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
