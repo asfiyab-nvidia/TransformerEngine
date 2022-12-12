@@ -127,38 +127,39 @@ def validate_result(
     fname = os.path.join(ONNX_FILES_DIR, fname)
     ort_s = create_ort_session(fname, is_fp8)
     onnx_outputs = ort_s.run(None, input_feed=create_ort_input_dict(ort_s, inps))
-    torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
+    with torch.inference_mode():
+        torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
 
-    if not isinstance(torch_outputs, tuple):
-        torch_outputs = (torch_outputs, )
+        if not isinstance(torch_outputs, tuple):
+            torch_outputs = (torch_outputs, )
 
-    # Compare ORT and TE outputs.
-    assert len(onnx_outputs) == len(torch_outputs)
-    for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
-        torch_output = to_numpy(torch_output)
+        # Compare ORT and TE outputs.
+        assert len(onnx_outputs) == len(torch_outputs)
+        for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
+            torch_output = to_numpy(torch_output)
 
-        # Compare ORT and PyTorch outputs.
-        # Prefer math.isclose to np.isclose (see https://github.com/numpy/numpy/issues/10161).
-        # math.isclose: abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
-        # np.isclose: abs(a - b) <= (atol + rtol * abs(b))
-        ac = ~np.isclose(onnx_output, torch_output, atol=atol, rtol=rtol)
-        #ac = [math.isclose(x, y, abs_tol=atol, rel_tol=rtol) for x,y in zip(onnx_output.flatten(), torch_output.flatten())]
+            # Compare ORT and PyTorch outputs.
+            # Prefer math.isclose to np.isclose (see https://github.com/numpy/numpy/issues/10161).
+            # math.isclose: abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
+            # np.isclose: abs(a - b) <= (atol + rtol * abs(b))
+            ac = ~np.isclose(onnx_output, torch_output, atol=atol, rtol=rtol)
+            #ac = [math.isclose(x, y, abs_tol=atol, rel_tol=rtol) for x,y in zip(onnx_output.flatten(), torch_output.flatten())]
 
-        mismatches = ac.nonzero()
-        mismatched_ids = [loc for loc in zip(*mismatches)]
-        if mismatched_ids:
-            # Log some information in case of error.
-            print("*" * 100)
-            print(onnx_output.shape)
-            nb_vals = min(len(mismatched_ids), max_errors_printed)
-            print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
-            abs_err = abs(onnx_output - torch_output)
-            for loc in mismatched_ids[:nb_vals]:
-                ref = torch_output[loc]
-                print(f"{onnx_output[loc]} -- {torch_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
-                #print(f"{onnx_output[loc]} -- {torch_output[loc]}")
-                #print(f"{onnx_output[loc]} -- {torch_output[loc]} fp32_truth={inps[loc]}")
-            raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
+            mismatches = ac.nonzero()
+            mismatched_ids = [loc for loc in zip(*mismatches)]
+            if mismatched_ids:
+                # Log some information in case of error.
+                print("*" * 100)
+                print(onnx_output.shape)
+                nb_vals = min(len(mismatched_ids), max_errors_printed)
+                print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
+                abs_err = abs(onnx_output - torch_output)
+                for loc in mismatched_ids[:nb_vals]:
+                    ref = torch_output[loc]
+                    print(f"{onnx_output[loc]} -- {torch_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
+                    #print(f"{onnx_output[loc]} -- {torch_output[loc]}")
+                    #print(f"{onnx_output[loc]} -- {torch_output[loc]} fp32_truth={inps[loc]}")
+                raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
 
 
 def create_meta(scale_factor: float, size: int=1):
