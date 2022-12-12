@@ -2,6 +2,17 @@
 #
 # See LICENSE for license information.
 
+"""
+ONNX symbolic functions for Transformer Engine
+
+Warnings of the type pasted below are a known Pytorch issue (https://github.com/pytorch/pytorch/issues/81693):
+
+tests/test_onnx_export.py::test_export_cast_ops[112]
+  /opt/conda/lib/python3.8/site-packages/torch/onnx/utils.py:649: UserWarning: The shape inference of trt::TRT_FP8DequantizeLinear type is missing, so it may result in wrong shape inference for the exported graph. Please consider adding it in symbolic function. (Triggered internally at /opt/pytorch/pytorch/torch/csrc/jit/passes/onnx/shape_type_inference.cpp:1880.)
+    _C._jit_pass_onnx_graph_shape_type_inference(
+
+"""
+
 import torch
 from torch.onnx import symbolic_helper, register_custom_op_symbolic
 import transformer_engine_extensions as tex
@@ -9,21 +20,26 @@ import transformer_engine_extensions as tex
 # This file registers custom op symbolic ONNX functions and does not export any symbols.
 __all__ = []
 
-OPSET = 11
+
+# Custom ops spec version
+VER = 1
 
 
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_cast_to_fp8(g, input, scale, amax, scale_inv, fp8_tensor, otype):
-    return g.op("TRT_FP8QuantizeLinear", input, scale_inv)
+    output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
+    return g.op("trt::TRT_FP8QuantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
 
 @symbolic_helper.parse_args("v", "v", "i", "i", "i")
 def onnx_cast_from_fp8(g, input, scale_inv, fp8_tensor, itype, otype):
-    return g.op("TRT_FP8DequantizeLinear", input, scale_inv)
+    output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
+    return g.op("trt::TRT_FP8DequantizeLinear", input, scale_inv).setType(input.type().with_dtype(torch.float32).with_sizes(output_shape))
 
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_fp8_gelu(g, input, scale, amax, scale_inv, fp8_tensor, otype):
+    output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     gelu = torch.onnx.symbolic_opset9.gelu(g, input)
-    return g.op("TRT_FP8QuantizeLinear", gelu, scale_inv)
+    return g.op("trt::TRT_FP8QuantizeLinear", gelu, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
 
 @symbolic_helper.parse_args("v", "v", "i", "i", "i",
                              "v", "v", "i", "i", "i",
@@ -51,10 +67,10 @@ def onnx_te_gemm(
     accumulate,
     use_split_accumulator):
     if input_type == int(tex.DType.kFloat8E4M3):
-        input = g.op("TRT_FP8DequantizeLinear", input, input_scale_inverse)
+        input = g.op("trt::TRT_FP8DequantizeLinear", input, input_scale_inverse)
 
     if weight_type == int(tex.DType.kFloat8E4M3):
-        weight = g.op("TRT_FP8DequantizeLinear", weight, weight_scale_inverse)
+        weight = g.op("trt::TRT_FP8DequantizeLinear", weight, weight_scale_inverse)
 
     output = g.op("Gemm", input, weight, transA_i=trans_input, transB_i=trans_weight)
 
@@ -88,7 +104,8 @@ def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, 
         eps,
         False # cudnn_enable (not relevant)
     )
-    fp8_ln = g.op("TRT_FP8QuantizeLinear", ln, scale_inv)
+    output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
+    fp8_ln = g.op("trt::TRT_FP8QuantizeLinear", ln, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
     return fp8_ln
 
 
@@ -114,10 +131,9 @@ def onnx_layernorm_fwd(g, input, weight, bias, eps):
     return ln
 
 
-register_custom_op_symbolic('tex_ts::cast_to_fp8_ts', onnx_cast_to_fp8, OPSET)
-register_custom_op_symbolic('tex_ts::cast_from_fp8_ts', onnx_cast_from_fp8, OPSET)
-register_custom_op_symbolic('tex_ts::fp8_gelu_ts', onnx_fp8_gelu, OPSET)
-register_custom_op_symbolic('tex_ts::te_gemm_ts', onnx_te_gemm, OPSET)
-register_custom_op_symbolic('tex_ts::layernorm_fwd_fp8_inf_ts', onnx_layernorm_fwd_fp8, OPSET)
-register_custom_op_symbolic('tex_ts::layernorm_fwd_inf_ts', onnx_layernorm_fwd, OPSET)
-
+register_custom_op_symbolic('tex_ts::cast_to_fp8_ts', onnx_cast_to_fp8, VER)
+register_custom_op_symbolic('tex_ts::cast_from_fp8_ts', onnx_cast_from_fp8, VER)
+register_custom_op_symbolic('tex_ts::fp8_gelu_ts', onnx_fp8_gelu, VER)
+register_custom_op_symbolic('tex_ts::te_gemm_ts', onnx_te_gemm, VER)
+register_custom_op_symbolic('tex_ts::layernorm_fwd_fp8_inf_ts', onnx_layernorm_fwd_fp8, VER)
+register_custom_op_symbolic('tex_ts::layernorm_fwd_inf_ts', onnx_layernorm_fwd, VER)
