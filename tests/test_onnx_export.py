@@ -79,27 +79,28 @@ def validate_result(
     else:
         inp_dict[s.get_inputs()[0].name] = to_numpy(inps)
     onnx_outputs = s.run(None, input_feed=inp_dict)
-    torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
+    with torch.inference_mode():
+        torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
 
-    if not isinstance(torch_outputs, tuple):
-        torch_outputs = (torch_outputs, )
+        if not isinstance(torch_outputs, tuple):
+            torch_outputs = (torch_outputs, )
 
-    assert len(onnx_outputs) == len(torch_outputs)
-    for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
-        torch_output = to_numpy(torch_output)
-        # Compare ORT and PyTorch outputs
-        ac = ~np.isclose(onnx_output, torch_output, atol=atol)
-        mismatches = ac.nonzero()
-        mismatched_ids = [loc for loc in zip(*mismatches)]
-        if mismatched_ids:
-            # Log some information in case of error.
-            print("*" * 100)
-            print(onnx_output.shape)
-            nb_vals = min(len(mismatched_ids), max_errors_printed)
-            print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
-            for loc in mismatched_ids[:nb_vals]:
-                print(f"{onnx_output[loc]} -- {torch_output[loc]}")
-            raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
+        assert len(onnx_outputs) == len(torch_outputs)
+        for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
+            torch_output = to_numpy(torch_output)
+            # Compare ORT and PyTorch outputs
+            ac = ~np.isclose(onnx_output, torch_output, atol=atol)
+            mismatches = ac.nonzero()
+            mismatched_ids = [loc for loc in zip(*mismatches)]
+            if mismatched_ids:
+                # Log some information in case of error.
+                print("*" * 100)
+                print(onnx_output.shape)
+                nb_vals = min(len(mismatched_ids), max_errors_printed)
+                print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
+                for loc in mismatched_ids[:nb_vals]:
+                    print(f"{onnx_output[loc]} -- {torch_output[loc]}")
+                raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
 
 
 def create_meta(scale_factor: float, size: int=1):
@@ -398,9 +399,8 @@ def test_export_softmax(softmax_def, precision):
         model = Test_Softmax(softmax_def)
     elif softmax_def == softmax_defs.ScaledMaskedSoftmax:
         # Generate a random mask with 50% probability for 0 or 1.
-        probs = 0.5 * torch.ones(hidden_size, 1, in_features, in_features, device="cuda")
+        probs = 0.5 * torch.ones(hidden_size, 1, in_features, in_features, device="cuda", dtype=precision)
         mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
-        mask = mask if precision == torch.float32 else mask.half()
         input_names.append("mask")
 
         input_tensor = torch.randn(hidden_size, in_features, in_features, in_features, device="cuda")
@@ -581,9 +581,8 @@ def test_export_core_attention(
     attention_mask = None
     if use_mask:
         # Generate a random mask with 50% probability for 0 or 1.
-        probs = 0.5 * torch.ones(qkv_size[1], qkv_size[2], qkv_size[0], qkv_size[0], device="cuda")
+        probs = 0.5 * torch.ones(qkv_size[1], qkv_size[2], qkv_size[0], qkv_size[0], device="cuda", dtype=precision)
         attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
-        attention_mask = attention_mask if precision == torch.float32 else attention_mask.half()
         input_names.append("attention_mask")
     inp = (query_layer, key_layer, value_layer, attention_mask)
 
@@ -659,9 +658,8 @@ def test_export_multihead_attention(
     attention_mask = None
     if use_mask and attn_mask_type != "causal":
         # Generate a random mask with 50% probability for 0 or 1.
-        probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda")
+        probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda", dtype=precision)
         attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
-        attention_mask = attention_mask if precision == torch.float32 else attention_mask.half()
         input_names.append("attention_mask")
     inp = (hidden_states, attention_mask)
 
@@ -716,9 +714,8 @@ def test_export_transformer_layer(
     attention_mask = None
     if use_mask and attn_mask_type != "causal":
         # Generate a random mask with 50% probability for 0 or 1.
-        probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda")
+        probs = 0.5 * torch.ones(batch_size, 1, sequence_length, sequence_length, device="cuda", dtype=precision)
         attention_mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
-        attention_mask = attention_mask if precision == torch.float32 else attention_mask.half()
         input_names.append("attention_mask")
     inp = (input_tensor, attention_mask)
 
