@@ -112,23 +112,7 @@ def onnx_te_gemm(
 
 @symbolic_helper.parse_args("v", "v", "v", "f", "v", "v", "v",  "i")
 def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, otype):
-    normalized_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
-    if normalized_shape is None:
-        ndim = torch.onnx.symbolic_helper._get_tensor_rank(input)
-        assert ndim is not None
-        normalized_shape = list(range(0, ndim))
-    # Normalization axis = 0, so normalized_shape uses all dims except dim = 0
-    normalized_shape = normalized_shape[1:]
-
-    ln = torch.onnx.symbolic_opset9.layer_norm(
-        g,
-        input,
-        normalized_shape,
-        weight,
-        bias,
-        eps,
-        False # cudnn_enable (not relevant)
-    )
+    ln = onnx_layernorm_fwd(g, input, weight, bias, eps)
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     if input.type().scalarType() == "Half":
         ln = g.op("Cast", ln, to_i=_C_onnx.TensorProtoDataType.FLOAT)
@@ -136,7 +120,7 @@ def onnx_layernorm_fwd_fp8(g, input, weight, bias, eps, scale, amax, scale_inv, 
     return fp8_ln
 
 
-@symbolic_helper.parse_args("v", "v", "v", "f", "v", "v", "v",  "i")
+@symbolic_helper.parse_args("v", "v", "v", "f")
 def onnx_layernorm_fwd(g, input, weight, bias, eps):
     normalized_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     if normalized_shape is None:

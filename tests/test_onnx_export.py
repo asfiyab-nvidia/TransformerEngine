@@ -128,21 +128,21 @@ def validate_result(
     ort_s = create_ort_session(fname, is_fp8)
     onnx_outputs = ort_s.run(None, input_feed=create_ort_input_dict(ort_s, inps))
     with torch.inference_mode():
-        torch_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
+        te_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
 
-        if not isinstance(torch_outputs, tuple):
-            torch_outputs = (torch_outputs, )
+        if not isinstance(te_outputs, tuple):
+            te_outputs = (te_outputs, )
 
         # Compare ORT and TE outputs.
-        assert len(onnx_outputs) == len(torch_outputs)
-        for onnx_output, torch_output in zip(onnx_outputs, torch_outputs):
-            torch_output = to_numpy(torch_output)
+        assert len(onnx_outputs) == len(te_outputs)
+        for onnx_output, te_output in zip(onnx_outputs, te_outputs):
+            te_output = to_numpy(te_output)
 
             # Compare ORT and PyTorch outputs.
             # Prefer math.isclose to np.isclose (see https://github.com/numpy/numpy/issues/10161).
             # math.isclose: abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
             # np.isclose: abs(a - b) <= (atol + rtol * abs(b))
-            ac = ~np.isclose(onnx_output, torch_output, atol=atol, rtol=rtol)
+            ac = ~np.isclose(onnx_output, te_output, atol=atol, rtol=rtol)
             #ac = [math.isclose(x, y, abs_tol=atol, rel_tol=rtol) for x,y in zip(onnx_output.flatten(), torch_output.flatten())]
 
             mismatches = ac.nonzero()
@@ -153,12 +153,10 @@ def validate_result(
                 print(onnx_output.shape)
                 nb_vals = min(len(mismatched_ids), max_errors_printed)
                 print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
-                abs_err = abs(onnx_output - torch_output)
+                abs_err = abs(onnx_output - te_output)
                 for loc in mismatched_ids[:nb_vals]:
-                    ref = torch_output[loc]
-                    print(f"{onnx_output[loc]} -- {torch_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
-                    #print(f"{onnx_output[loc]} -- {torch_output[loc]}")
-                    #print(f"{onnx_output[loc]} -- {torch_output[loc]} fp32_truth={inps[loc]}")
+                    ref = te_output[loc]
+                    print(f"{onnx_output[loc]} -- {te_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
                 raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
 
 
@@ -238,19 +236,11 @@ def test_export_gelu_fp8(scale_factor: float, precision: torch.dtype):
             self.fp8_type = tex.DType.kFloat8E4M3
 
         def forward(self, inp):
-            if False:
-                ret = torch.nn.functional.gelu(inp)
-                ret = cast_to_fp8(
-                    inp,
-                    self.meta,
-                    self.fp8_tensor,
-                    self.fp8_type)
-            else:
-                ret = fp8_gelu(
-                    inp,
-                    self.meta,
-                    self.fp8_tensor,
-                    self.fp8_type)
+            ret = fp8_gelu(
+                inp,
+                self.meta,
+                self.fp8_tensor,
+                self.fp8_type)
             ret = cast_from_fp8(
                 ret,
                 self.meta,
@@ -262,7 +252,7 @@ def test_export_gelu_fp8(scale_factor: float, precision: torch.dtype):
     # Set dimensions (these are arbitrary).
     in_features = 64
     hidden_size = 256
-    inp = torch.randn(hidden_size, in_features, device="cuda")
+    inp = torch.randn(hidden_size, in_features, device="cuda", dtype=precision)
     high_prec_str = dtype2str(precision)
     fname = f"te.gelu_fp8{high_prec_str}.onnx"
     model = TestFP8_Gelu()
@@ -402,11 +392,32 @@ def test_export_gemm(
         validate_result(fname, (inp, weight), model, rtol=1e-2, atol=1e-2)
 
 
+@pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.parametrize("scale_factor", [448, 112])
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
-def test_export_layernorm(scale_factor: float, precision: torch.dtype):
+def test_export_layernorm(
+    use_fp8: bool,
+    scale_factor: float,
+    precision: torch.dtype
+):
     # Set dimensions (these are arbitrary).
     inp_shape = [64, 32]
+
+    class Test_Layernorm(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            normalized_shape = torch.Size(inp.shape[1:])
+            self.weight = torch.randn(*normalized_shape, dtype=precision, device="cuda")
+            self.bias = torch.zeros(*normalized_shape, dtype=precision, device="cuda")
+            self.eps = 1e-6 # An arbitrary small value
+
+        def forward(self, inp):
+            ret = texcpp.layernorm_fwd_inf(
+                inp,
+                self.weight,
+                self.bias,
+                self.eps)
+            return ret
 
     class TestFP8_Layernorm(nn.Module):
         def __init__(self) -> None:
@@ -439,36 +450,16 @@ def test_export_layernorm(scale_factor: float, precision: torch.dtype):
 
     inp = torch.randn(*inp_shape, device="cuda", dtype=precision)
     high_prec_str = dtype2str(precision)
-    fname = f"te.layernorm_fwd_fp8{high_prec_str}.onnx"
-    model = TestFP8_Layernorm()
+    if use_fp8:
+        fname = f"te.layernorm_fwd_fp8{high_prec_str}.onnx"
+        model = TestFP8_Layernorm()
+    else:
+        fname = f"te.layernorm_fwd{high_prec_str}.onnx"
+        model = Test_Layernorm()
+
     do_export(model, inp, fname)
     if precision not in (torch.bfloat16, ):
         validate_result(fname, inp, model, atol=1e-5, is_fp8=True)
-
-@pytest.mark.parametrize("scale_factor", [448])
-@pytest.mark.parametrize("precision", [torch.float32, torch.float16])
-def test_export_layernorm(scale_factor: float, precision: torch.dtype):
-    class Test_Layernorm(nn.Module):
-        def forward(self, inp):
-            # inputs to layernorm_fwd_ts
-            weight = torch.randn(64, 64, dtype=precision, device="cuda")
-            bias = torch.randn(64, dtype=precision, device="cuda")
-            eps = 1e-4 # An arbitrary small value
-
-            ret = texcpp.layernorm_fwd_inf(
-                inp,
-                weight,
-                bias,
-                eps)
-
-            return ret
-
-    # Set dimensions (these are arbitrary).
-    in_features = 64
-    hidden_size = 64
-    inp = torch.randn(hidden_size, in_features, device="cuda")
-    high_prec_str = "_fp16" if precision == torch.float16 else "_fp32"
-    do_export(Test_Layernorm(), inp, f"te.layernorm_fwd{high_prec_str}.onnx")
 
 
 @pytest.mark.parametrize("softmax_def", [
