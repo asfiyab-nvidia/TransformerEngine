@@ -665,7 +665,7 @@ def test_export_layernorm_mlp(
         if not use_fp8:
             validate_result(fname, inp, model, atol=1e-3)
         else:
-            validate_result(fname, inp, model, atol=5e-1, is_fp8=use_fp8)
+            validate_result(fname, inp, model, atol=1e-2, is_fp8=use_fp8)
 
 
 @pytest.mark.parametrize(
@@ -757,7 +757,6 @@ def test_export_multihead_attention(
     hidden_size = 256
     sequence_length = 128
     batch_size = 4
-
     num_attention_heads = 32
     kv_channels = 8
     attention_dropout = 0.1
@@ -786,8 +785,8 @@ def test_export_multihead_attention(
     dtype_str = "_fp32" if precision == torch.float32 else "_fp16"
     attn_type_str = "_self_attention" if attention_type == "self" else "_cross_attention"
     fuse_qkv_str = "_fused" if fuse_qkv_params else ""
-    mask_str = "_masked" if use_mask and attn_mask_type != "causal" else ""
-    fname = f"te.multihead_attention{fp8_str}{attn_mask_type}{dtype_str}_{attn_type_str}{fuse_qkv_str}{mask_str}.onnx"
+    attn_mask_type_str = f"_{attn_mask_type}" if (use_mask and attn_mask_type != "") else ""
+    fname = f"te.multihead_attention{fp8_str}{attn_mask_type_str}{attn_type_str}{fuse_qkv_str}{dtype_str}.onnx"
 
     model = te.transformer.MultiHeadAttention(
         *attention_args,
@@ -840,9 +839,13 @@ def test_export_transformer_layer(
         input_names.append("attention_mask")
     inp = (input_tensor, attention_mask)
 
-    fp8 = "_fp8" if use_fp8 else ""
-    mask = "_masked" if use_mask and attn_mask_type != "causal" else ""
-    fname = f"te.transformer_layer{fp8}{mask}.onnx"
+    fp8_str = "_fp8" if use_fp8 else ""
+    fuse_qkv_params_str = "_fuse-qkv" if fuse_qkv_params else ""
+    qk_scaling_str = "_qk-scaling" if apply_query_key_layer_scaling else ""
+    high_prec_str = dtype2str(precision)
+    attn_mask_type_str = f"_{attn_mask_type}" if (use_mask and attn_mask_type != "") else ""
+    fname = f"te.transformer_layer{fp8_str}{attn_mask_type_str}{fuse_qkv_params_str}{qk_scaling_str}{high_prec_str}.onnx"
+
     model = te.TransformerLayer(
         hidden_size,
         ffn_hidden_size,
@@ -856,4 +859,4 @@ def test_export_transformer_layer(
     if not use_fp8:
         validate_result(fname, inp, model, atol=1e-3)
     elif precision != torch.float16:
-        validate_result(fname, inp, model, atol=2e-1, is_fp8=use_fp8)
+        validate_result(fname, inp, model, atol=5e-1, is_fp8=use_fp8)
