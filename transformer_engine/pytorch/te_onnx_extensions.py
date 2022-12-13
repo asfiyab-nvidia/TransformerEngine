@@ -50,7 +50,7 @@ def onnx_cast_from_fp8(g, input, scale_inv, fp8_tensor, itype, otype):
 @symbolic_helper.parse_args("v", "v", "v", "v", "i", "i")
 def onnx_fp8_gelu(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
-    gelu = torch.onnx.symbolic_opset9.gelu(g, input)
+    gelu = torch.onnx.symbolic_opset9.gelu(g, input, "tanh")
     if input.type().scalarType() == "Half":
         gelu = g.op("Cast", gelu, to_i=_C_onnx.TensorProtoDataType.FLOAT)
     out = g.op(make_op_name("TRT_FP8QuantizeLinear"), gelu, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
