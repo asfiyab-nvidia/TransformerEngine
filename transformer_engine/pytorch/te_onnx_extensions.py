@@ -34,6 +34,7 @@ def make_op_name(op_name: str) -> str:
 def onnx_cast_to_fp8(g, input, scale, amax, scale_inv, fp8_tensor, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     if input.type().scalarType() == "Half":
+        # Q inputs are currently constrained to FP32 due to a similar limitation in ORT custom ops.
         input = g.op("Cast", input, to_i=_C_onnx.TensorProtoDataType.FLOAT)
     return g.op(make_op_name("TRT_FP8QuantizeLinear"), input, scale_inv).setType(input.type().with_dtype(torch.uint8).with_sizes(output_shape))
 
@@ -43,6 +44,7 @@ def onnx_cast_from_fp8(g, input, scale_inv, fp8_tensor, itype, otype):
     output_shape = torch.onnx.symbolic_helper._get_tensor_sizes(input)
     out = g.op(make_op_name("TRT_FP8DequantizeLinear"), input, scale_inv).setType(input.type().with_dtype(torch.float32).with_sizes(output_shape))
     if otype == int(tex.DType.kFloat16):
+        # DQ outputs are currently constrained to FP32 due to a similar limitation in ORT custom ops, so cast the output.
         out = g.op("Cast", out, to_i=_C_onnx.TensorProtoDataType.FLOAT16)
     return out
 

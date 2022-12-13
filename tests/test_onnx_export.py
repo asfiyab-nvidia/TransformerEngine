@@ -38,6 +38,10 @@ OPSET = 15
 assert OPSET >= TRILU_OPSET
 
 
+def create_fp8_recipe():
+    return recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.E4M3)
+
+
 def do_export(
     model: torch.nn.Module,
     inp: torch.Tensor,
@@ -48,7 +52,7 @@ def do_export(
     output_names: list=["output"],
 ):
     """Export to ONNX"""
-    fp8_recipe = recipe.DelayedScaling(margin=0, interval=1, fp8_format=recipe.Format.E4M3)
+    fp8_recipe = create_fp8_recipe()
 
     with torch.inference_mode(), te.fp8_autocast(enabled=use_fp8, fp8_recipe=fp8_recipe), warnings.catch_warnings():
         warnings.filterwarnings(
@@ -75,7 +79,7 @@ def to_numpy(tensor):
     return tensor.cpu().numpy()
 
 
-def set_layer_scale(module: torch.nn.Module, scale: float ):
+def set_layer_scale(module: torch.nn.Module, scale: float):
     module.fp8_init()
     module.fp8_meta["scaling_fwd"].scale = torch.ones(
         2, dtype=torch.float32, device="cuda") / scale
@@ -83,31 +87,45 @@ def set_layer_scale(module: torch.nn.Module, scale: float ):
         2, dtype=torch.float32, device="cuda") * scale
 
 
+def te_infer(model: torch.nn.Module, inps: Union[Tuple[torch.tensor], torch.tensor], is_fp8: bool):
+    """Transformer Engine forward prpoagtation.
+
+    Return results after copying to the CPU and converting to numpy.
+    """
+    fp8_recipe = create_fp8_recipe()
+    with torch.inference_mode(), te.fp8_autocast(enabled=is_fp8, fp8_recipe=fp8_recipe), warnings.catch_warnings():
+        te_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
+        if not isinstance(te_outputs, tuple):
+            te_outputs = (te_outputs,)
+        te_outputs_np = [to_numpy(te_output) for te_output in te_outputs]
+        return te_outputs_np
+
+
 def validate_result(
     fname: str,
     inps: Union[Tuple[torch.Tensor], torch.Tensor],
     model: torch.nn.Module,
-    atol: float=1.e-8, #0,
-    rtol: float=1.e-5,#1.e-9,
+    atol: float=1.e-8, # np.isclose default atol
+    rtol: float=1.e-5, # np.isclose default rtol
     max_errors_printed: int=10,
     is_fp8: bool=False,
 ):
     """Validate the outputs of an ONNX model vs. ONNX Runtime."""
 
     def create_ort_session(fname: str, is_fp8: bool):
-        """Create an ONNX Runtime session for validation."""
-        if is_fp8:
-            # For FP8 validation with ORT we need to load our custom FP8 Q/DQ extension.
-            so1 = ort.SessionOptions()
+        def load_custom_ops(session_opts: ort.SessionOptions):
+            """For FP8 validation with ORT we need to load our custom FP8 Q/DQ extension."""
             if not os.path.exists(ORT_CUSTOM_OPS_LIB):
                 raise FileNotFoundError(f"Unable to find {ORT_CUSTOM_OPS_LIB}")
-            so1.register_custom_ops_library(ORT_CUSTOM_OPS_LIB)
+            session_opts.register_custom_ops_library(ORT_CUSTOM_OPS_LIB)
             print("registered custom FP8 Q/DQ ops!")
 
+        """Create an ONNX Runtime session for validation."""
+        if is_fp8:
+            sess_options = ort.SessionOptions()
+            load_custom_ops(sess_options)
             # Model loading successfully indicates that the custom op node could be resolved successfully
-            s = ort.InferenceSession(
-                fname, sess_options=so1
-            )
+            s = ort.InferenceSession(fname, sess_options=sess_options)
         else:
             s = ort.InferenceSession(fname)
         return s
@@ -127,37 +145,29 @@ def validate_result(
     fname = os.path.join(ONNX_FILES_DIR, fname)
     ort_s = create_ort_session(fname, is_fp8)
     onnx_outputs = ort_s.run(None, input_feed=create_ort_input_dict(ort_s, inps))
-    with torch.inference_mode():
-        te_outputs = model(*inps if isinstance(inps, tuple) else (inps,))
+    te_outputs = te_infer(model, inps, is_fp8)
 
-        if not isinstance(te_outputs, tuple):
-            te_outputs = (te_outputs, )
+    # Compare ORT and TE outputs.
+    assert len(onnx_outputs) == len(te_outputs)
+    for onnx_output, te_output in zip(onnx_outputs, te_outputs):
 
-        # Compare ORT and TE outputs.
-        assert len(onnx_outputs) == len(te_outputs)
-        for onnx_output, te_output in zip(onnx_outputs, te_outputs):
-            te_output = to_numpy(te_output)
+        # Compare ORT and PyTorch outputs.
+        # np.isclose: abs(a - b) <= (atol + rtol * abs(b))
+        ac = ~np.isclose(onnx_output, te_output, atol=atol, rtol=rtol)
 
-            # Compare ORT and PyTorch outputs.
-            # Prefer math.isclose to np.isclose (see https://github.com/numpy/numpy/issues/10161).
-            # math.isclose: abs(a-b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
-            # np.isclose: abs(a - b) <= (atol + rtol * abs(b))
-            ac = ~np.isclose(onnx_output, te_output, atol=atol, rtol=rtol)
-            #ac = [math.isclose(x, y, abs_tol=atol, rel_tol=rtol) for x,y in zip(onnx_output.flatten(), torch_output.flatten())]
-
-            mismatches = ac.nonzero()
-            mismatched_ids = [loc for loc in zip(*mismatches)]
-            if mismatched_ids:
-                # Log some information in case of error.
-                print("*" * 100)
-                print(onnx_output.shape)
-                nb_vals = min(len(mismatched_ids), max_errors_printed)
-                print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
-                abs_err = abs(onnx_output - te_output)
-                for loc in mismatched_ids[:nb_vals]:
-                    ref = te_output[loc]
-                    print(f"{onnx_output[loc]} -- {te_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
-                raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
+        mismatches = ac.nonzero()
+        mismatched_ids = [loc for loc in zip(*mismatches)]
+        if mismatched_ids:
+            # Log some information in case of error.
+            print("*" * 100)
+            print(onnx_output.shape)
+            nb_vals = min(len(mismatched_ids), max_errors_printed)
+            print(f"Detected {len(mismatched_ids)} diverging values.\nShowing first {nb_vals} errors (ONNX -- TE):")
+            abs_err = abs(onnx_output - te_output)
+            for loc in mismatched_ids[:nb_vals]:
+                ref = te_output[loc]
+                print(f"{onnx_output[loc]} -- {te_output[loc]} err={abs_err[loc]} > {atol + rtol * abs(ref)}")
+            raise ValueError(f"Output validation of {fname} failed with {len(mismatched_ids)} errors")
 
 
 def create_meta(scale_factor: float, size: int=1):
@@ -236,7 +246,6 @@ def test_export_gelu_fp8(scale_factor: float, precision: torch.dtype, atol: floa
             self.meta = create_meta(scale_factor)
             self.highprec_type = as_te_type(precision)
             self.fp8_type = tex.DType.kFloat8E4M3
-            self.gelu = torch.nn.GELU()
 
         def forward(self, inp):
             ret = fp8_gelu(
@@ -462,7 +471,7 @@ def test_export_layernorm(
 
     do_export(model, inp, fname)
     if precision not in (torch.bfloat16, ):
-        validate_result(fname, inp, model, atol=1e-5, is_fp8=True)
+        validate_result(fname, inp, model, atol=1e-5, is_fp8=use_fp8)
 
 
 @pytest.mark.parametrize("softmax_def", [
@@ -492,8 +501,9 @@ def test_export_softmax(softmax_def, precision):
     hidden_size = 256
     mask = None
     input_names = ["input"]
+    inp_shape = [hidden_size, in_features, in_features, in_features]
     if softmax_def == softmax_defs.ScaledUpperTriangMaskedSoftmax:
-        input_tensor = torch.randn(hidden_size, in_features, in_features, device="cuda")
+        inp_shape = [hidden_size, in_features, in_features]
         kernel_str = "te.ScaledUpperTriangMaskedSoftmax"
         model = Test_Softmax(softmax_def)
     elif softmax_def == softmax_defs.ScaledMaskedSoftmax:
@@ -501,21 +511,19 @@ def test_export_softmax(softmax_def, precision):
         probs = 0.5 * torch.ones(hidden_size, 1, in_features, in_features, device="cuda", dtype=precision)
         mask = torch.bernoulli(probs).to("cuda", dtype=torch.bool)
         input_names.append("mask")
-
-        input_tensor = torch.randn(hidden_size, in_features, in_features, in_features, device="cuda")
-        input_tensor = input_tensor if precision == torch.float32 else input_tensor.half()
         kernel_str = "te.ScaledMaskedSoftmax"
         model = Test_Softmax(softmax_def, mask_inp=True)
     elif softmax_def == softmax_defs.ScaledSoftmax:
-        input_tensor = torch.randn(hidden_size, in_features, in_features, in_features, device="cuda")
         kernel_str = "te.ScaledSoftmax"
         model = Test_Softmax(softmax_def)
-    input_tensor = input_tensor if precision == torch.float32 else input_tensor.half()
+    input_tensor = torch.randn(*inp_shape, device="cuda")
+    input_tensor = input_tensor.to(torch.bfloat16) if precision == torch.bfloat16 else input_tensor.half()
     high_prec_str = dtype2str(precision)
     fname = f"{kernel_str}{high_prec_str}.onnx"
     inp = (input_tensor, mask)
     do_export(model, inp, fname, input_names=input_names)
-    validate_result(fname, inp, model, atol=1e-3)
+    if precision != torch.bfloat16:
+        validate_result(fname, inp, model, atol=1e-3)
 
 
 @pytest.mark.parametrize("scale_factor", [1])
@@ -782,7 +790,7 @@ def test_export_multihead_attention(
     inp = (hidden_states, attention_mask)
 
     fp8_str = "_fp8" if use_fp8 else ""
-    dtype_str = "_fp32" if precision == torch.float32 else "_fp16"
+    dtype_str = dtype2str(precision)
     attn_type_str = "_self_attention" if attention_type == "self" else "_cross_attention"
     fuse_qkv_str = "_fused" if fuse_qkv_params else ""
     attn_mask_type_str = f"_{attn_mask_type}" if (use_mask and attn_mask_type != "") else ""
