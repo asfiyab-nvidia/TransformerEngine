@@ -277,6 +277,7 @@ def layernorm_fwd_fp8_inf(
         otype)
     return ret
 
+
 def layernorm_fwd_inf(
     inp: torch.Tensor,
     weight: torch.Tensor,
@@ -290,6 +291,7 @@ def layernorm_fwd_inf(
         bias,
         eps,
     )
+
 
 def cast_to_fp8(
     inp: torch.Tensor,
