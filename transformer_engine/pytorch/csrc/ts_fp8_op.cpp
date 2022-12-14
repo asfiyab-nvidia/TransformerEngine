@@ -8,8 +8,7 @@
 #include "extensions.h"
 
 transformer_engine::DType reverse_map_dtype(int64_t dtype) {
-  switch (dtype)
-  {
+  switch (dtype) {
     case static_cast<int64_t>(transformer_engine::DType::kByte):
         return transformer_engine::DType::kByte;
     case static_cast<int64_t>(transformer_engine::DType::kInt32):
@@ -38,7 +37,6 @@ at::Tensor cast_to_fp8_ts(const at::Tensor &input,
                           int64_t otype) {
 
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
-
   at::Tensor output =  cast_to_fp8(input,
                                    scale[fp8_tensor],
                                    amax[0][fp8_tensor],
@@ -55,7 +53,6 @@ at::Tensor cast_from_fp8_ts(const at::Tensor &input,
 
   transformer_engine::DType itype_arg = reverse_map_dtype(itype);
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
-
   at::Tensor output = cast_from_fp8(input,
                                     scale_inv[fp8_tensor],
                                     itype_arg,
@@ -69,7 +66,6 @@ at::Tensor fp8_gelu_ts(at::Tensor input,
                        at::Tensor scale_inv,
                        int64_t fp8_tensor,
                        int64_t otype) {
-
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
   at::Tensor output = fp8_gelu(input,
                                scale[fp8_tensor],
@@ -146,7 +142,7 @@ at::Tensor layernorm_fwd_fp8_inf_ts(const at::Tensor &input,
                                     at::Tensor scale_inv,
                                     int64_t otype) {
   transformer_engine::DType otype_arg = reverse_map_dtype(otype);
-  float eps_float = (float) eps;
+  float eps_float = static_cast<float>(eps);
 
   at::Tensor output = layernorm_fwd_fp8_inf(input,
                                             weight,
@@ -164,7 +160,7 @@ at::Tensor layernorm_fwd_inf_ts(const at::Tensor &input,
                                 const at::Tensor &weight,
                                 const at::Tensor &bias,
                                 double eps) {
-  float eps_float = (float) eps;
+  float eps_float = static_cast<float>(eps);
 
   at::Tensor output = layernorm_fwd_inf(input,
                                         weight,
@@ -174,8 +170,7 @@ at::Tensor layernorm_fwd_inf_ts(const at::Tensor &input,
   return output.clone();
 }
 
-TORCH_LIBRARY(tex_ts, m)
-{
+TORCH_LIBRARY(tex_ts, m) {
   m.def("cast_to_fp8_ts", &cast_to_fp8_ts);
   m.def("cast_from_fp8_ts", &cast_from_fp8_ts);
   m.def("fp8_gelu_ts", &fp8_gelu_ts);

@@ -405,7 +405,7 @@ at::Tensor layernorm_fwd_fp8_inf(const at::Tensor &input,
                                  at::Tensor amax,
                                  at::Tensor scale_inv,
                                  transformer_engine::DType otype
-){
+) {
     // This is a specialized version of layernorm_fwd_fp8, optimized for inference,
     // which only returns the normalized output.
     std::vector<at::Tensor> out = layernorm_fwd_fp8(
