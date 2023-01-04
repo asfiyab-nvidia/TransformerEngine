@@ -80,12 +80,17 @@ def to_numpy(tensor):
     return tensor.cpu().numpy()
 
 
-def set_layer_scale(module: torch.nn.Module, scale: float):
-    module.fp8_init()
-    module.fp8_meta["scaling_fwd"].scale = torch.ones(
-        2, dtype=torch.float32, device="cuda") / scale
-    module.fp8_meta["scaling_fwd"].scale_inv = torch.ones(
-        2, dtype=torch.float32, device="cuda") * scale
+def set_layer_scale(module: torch.nn.Module, scales: float, num_gemms: int=1):
+    module.fp8_init(num_gemms=num_gemms)
+    assert len(scales) == num_gemms * 2, "Each gemm should be accompanied by 2 scales"
+    num_fp8_tensors = len(scales)
+    scale = torch.ones(num_fp8_tensors, dtype=torch.float32, device="cuda")
+    scale_inv = torch.ones(num_fp8_tensors, dtype=torch.float32, device="cuda")
+    for i, s in enumerate(scales):
+       scale[i] *= s
+       scale_inv[i] /= s
+    module.fp8_meta["scaling_fwd"].scale = scale
+    module.fp8_meta["scaling_fwd"].scale_inv = scale_inv
 
 
 def te_infer(model: torch.nn.Module, inps: Union[Tuple[torch.tensor], torch.tensor], is_fp8: bool):
@@ -541,7 +546,7 @@ def test_export_softmax(softmax_def, precision):
         validate_result(fname, inp, model, atol=1e-3)
 
 
-@pytest.mark.parametrize("scale_factor", [1])
+@pytest.mark.parametrize("scale_factor", [[448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -557,7 +562,7 @@ def test_export_softmax(softmax_def, precision):
     # (torch.bfloat16, True),
 ])
 def test_export_linear(
-    scale_factor: float,
+    scale_factor: list,
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -595,7 +600,7 @@ def test_export_linear(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.linear{fp8_str}{bias_str}{high_prec_str}.onnx"
-    with te.fp8_autocast(enabled=use_fp8):
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
         model = Test_Linear(
             in_features,
             out_features,
@@ -610,12 +615,12 @@ def test_export_linear(
         if precision in (torch.bfloat16, ):
             return
         if not use_fp8:
-            validate_result(fname, inp, model, atol=1e-3)
+            validate_result(fname, inp, model, atol=5e-4)
         else:
-            validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
+            validate_result(fname, inp, model, atol=5e-4, is_fp8=use_fp8)
 
 
-@pytest.mark.parametrize("scale_factor", [112])
+@pytest.mark.parametrize("scale_factor", [[448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -645,7 +650,7 @@ def test_export_layernorm_linear(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_linear{fp8_str}{bias_str}{high_prec_str}.onnx"
-    with te.fp8_autocast(enabled=use_fp8):
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
         model = te.LayerNormLinear(
             hidden_size,
             3 * hidden_size,
@@ -663,7 +668,7 @@ def test_export_layernorm_linear(
             validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
 
 
-@pytest.mark.parametrize("scale_factor", [112])
+@pytest.mark.parametrize("scale_factor", [[224, 224, 448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -694,7 +699,7 @@ def test_export_layernorm_mlp(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_mlp{fp8_str}{bias_str}{high_prec_str}.onnx"
-    with te.fp8_autocast(enabled=use_fp8):
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
         model = te.LayerNormMLP(
             hidden_size,
             ffn_hidden_size,
@@ -704,12 +709,12 @@ def test_export_layernorm_mlp(
             params_dtype=precision,
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model, scale_factor)
+            set_layer_scale(model, scale_factor, num_gemms=2)
         do_export(model, inp, fname, use_fp8)
         if not use_fp8:
-            validate_result(fname, inp, model, atol=1e-3)
+            validate_result(fname, inp, model, atol=5e-4)
         else:
-            validate_result(fname, inp, model, atol=2e-2, is_fp8=use_fp8)
+            validate_result(fname, inp, model, atol=7e-3, is_fp8=use_fp8)
 
 
 @pytest.mark.parametrize(
