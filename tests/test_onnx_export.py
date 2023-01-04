@@ -633,7 +633,7 @@ def test_export_linear(
     (torch.float16, False),
 ])
 def test_export_layernorm_linear(
-    scale_factor: float,
+    scale_factor: list,
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -681,7 +681,7 @@ def test_export_layernorm_linear(
     (torch.float16, False),
 ])
 def test_export_layernorm_mlp(
-    scale_factor: float,
+    scale_factor: list,
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
