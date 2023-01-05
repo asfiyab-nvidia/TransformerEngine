@@ -777,6 +777,33 @@ def test_export_core_attention(
     validate_result(fname, inp, model, atol=1e-2)
 
 
+def set_mha_scales(module,
+    scale_factor_qkv: list=[448, 448],
+    scale_factor_query: list=[112, 112],
+    scale_factor_kv: list=[224, 224],
+    scale_factor_proj: list=[448, 448]
+):
+    if module.attention_type == "self":
+        if module.input_layernorm:
+            # LayernormLinear layer scale init
+            set_layer_scale(module.layernorm_qkv, scale_factor_qkv)
+        else:
+            # Linear layer scale init
+            set_layer_scale(module.qkv, scale_factor_qkv)
+    else:
+        if module.input_layernorm:
+            # LayernormLinear layer scale init
+            set_layer_scale(module.layernorm_query, scale_factor_query)
+        else:
+            # Linear layer scale init
+            set_layer_scale(module.query_layer, scale_factor_query)
+
+        # Linear layer scale init
+        set_layer_scale(module.key_value, scale_factor_kv)
+
+    # Linear layer scale init
+    set_layer_scale(module.proj, scale_factor_proj)
+
 test_configs_multihead_attention = [
     #"use_mask, attn_mask_type"
     (False,    "causal"),  # calls ScaledUpperTriangMaskedSoftmax
@@ -802,6 +829,10 @@ test_configs_attention_type = [
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
 @pytest.mark.parametrize("return_layernorm_output", [False])
 @pytest.mark.parametrize("input_layernorm, attention_type, fuse_qkv_params", test_configs_attention_type)
+@pytest.mark.parametrize("scale_factor_qkv", [[448, 448]])
+@pytest.mark.parametrize("scale_factor_query", [[112, 112]])
+@pytest.mark.parametrize("scale_factor_kv", [[224, 224]])
+@pytest.mark.parametrize("scale_factor_proj", [[448, 448]])
 def test_export_multihead_attention(
     use_fp8: bool,
     use_mask: bool,
@@ -810,7 +841,11 @@ def test_export_multihead_attention(
     return_layernorm_output: bool,
     input_layernorm: bool,
     attention_type: str,
-    fuse_qkv_params: bool
+    fuse_qkv_params: bool,
+    scale_factor_qkv: list,
+    scale_factor_query: list,
+    scale_factor_kv: list,
+    scale_factor_proj: list,
 ):
     hidden_size = 256
     sequence_length = 128
@@ -851,21 +886,39 @@ def test_export_multihead_attention(
     input_ln_str = "_input-ln" if input_layernorm else ""
     fname = f"te.multihead_attention{fp8_str}{attn_mask_str}{attn_type_str}{input_ln_str}{fuse_qkv_str}{dtype_str}.onnx"
 
-    model = te.transformer.MultiHeadAttention(
-        *attention_args,
-        attn_mask_type=attn_mask_type,
-        params_dtype=precision,
-        return_layernorm_output=return_layernorm_output,
-        input_layernorm=input_layernorm,
-        attention_type=attention_type,
-        fuse_qkv_params=fuse_qkv_params,
-    ).to(device='cuda')
-    do_export(model, inp, fname, use_fp8, input_names=input_names)
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
-    elif precision != torch.float16:
-        validate_result(fname, inp, model, atol=1e-2, is_fp8=use_fp8)
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
+        model = te.transformer.MultiHeadAttention(
+            *attention_args,
+            attn_mask_type=attn_mask_type,
+            params_dtype=precision,
+            return_layernorm_output=return_layernorm_output,
+            input_layernorm=input_layernorm,
+            attention_type=attention_type,
+            fuse_qkv_params=fuse_qkv_params,
+        ).to(device='cuda')
+        if use_fp8:
+            set_mha_scales(model,
+                scale_factor_qkv,
+                scale_factor_query,
+                scale_factor_kv,
+                scale_factor_proj)
 
+        do_export(model, inp, fname, use_fp8, input_names=input_names)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        elif precision != torch.float16:
+            validate_result(fname, inp, model, atol=5e-3, is_fp8=use_fp8)
+
+def set_transformer_layer_scales(module,
+    scales_self_attn: list,
+    scales_inter_attn: list,
+    scales_layernorm_mlp: list=[224, 224, 448, 448]):
+    # set mha scales
+    set_mha_scales(module.self_attention, *scales_self_attn)
+    if module.layer_type == "decoder":
+        set_mha_scales(module.inter_attention, *scales_inter_attn)
+    # set layernorm mlp scales
+    set_layer_scale(module.layernorm_mlp, scales_layernorm_mlp, num_gemms=2)
 
 @pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
@@ -876,6 +929,11 @@ def test_export_multihead_attention(
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
 @pytest.mark.parametrize("fuse_qkv_params", [False, True])
 @pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
+@pytest.mark.parametrize("scale_factor_qkv", [[448, 448]])
+@pytest.mark.parametrize("scale_factor_query", [[112, 112]])
+@pytest.mark.parametrize("scale_factor_kv", [[224, 224]])
+@pytest.mark.parametrize("scale_factor_proj", [[448, 448]])
+@pytest.mark.parametrize("scale_factor_layernorm_mlp", [[224, 224, 448, 448]])
 def test_export_transformer_layer(
     use_fp8: bool,
     use_mask: bool,
@@ -883,7 +941,12 @@ def test_export_transformer_layer(
     output_layernorm: bool,
     precision: torch.dtype,
     fuse_qkv_params: bool,
-    apply_query_key_layer_scaling: bool
+    apply_query_key_layer_scaling: bool,
+    scale_factor_qkv: list,
+    scale_factor_query: list,
+    scale_factor_kv: list,
+    scale_factor_proj: list,
+    scale_factor_layernorm_mlp: list,
 ):
     # Layer configuration
     hidden_size = 64
@@ -909,17 +972,30 @@ def test_export_transformer_layer(
     attn_mask_str = get_attn_mask_str(use_mask, attn_mask_type)
     fname = f"te.transformer_layer{fp8_str}{attn_mask_str}{fuse_qkv_params_str}{qk_scaling_str}{high_prec_str}.onnx"
 
-    model = te.TransformerLayer(
-        hidden_size,
-        ffn_hidden_size,
-        num_attention_heads,
-        self_attn_mask_type=attn_mask_type,
-        output_layernorm=output_layernorm,
-        params_dtype=precision,
-        fuse_qkv_params=fuse_qkv_params,
-        apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
-    do_export(model, inp, fname, use_fp8)
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
-    elif precision != torch.float16:
-        validate_result(fname, inp, model, atol=5e-1, is_fp8=use_fp8)
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
+        model = te.TransformerLayer(
+            hidden_size,
+            ffn_hidden_size,
+            num_attention_heads,
+            self_attn_mask_type=attn_mask_type,
+            output_layernorm=output_layernorm,
+            params_dtype=precision,
+            fuse_qkv_params=fuse_qkv_params,
+            apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
+        if use_fp8:
+            mha_scales = [
+                scale_factor_qkv,
+                scale_factor_query,
+                scale_factor_kv,
+                scale_factor_proj
+            ]
+            set_transformer_layer_scales(model,
+                scales_self_attn=mha_scales,
+                scales_inter_attn=mha_scales,
+                scales_layernorm_mlp=scale_factor_layernorm_mlp)
+
+        do_export(model, inp, fname, use_fp8)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        elif precision != torch.float16:
+            validate_result(fname, inp, model, atol=1e-2, is_fp8=use_fp8)
