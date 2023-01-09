@@ -14,7 +14,7 @@ import math
 import onnxruntime as ort
 import torch
 from torch import nn as nn
-from typing import Union, Tuple
+from typing import Union, Tuple, List
 import transformer_engine.pytorch as te
 from transformer_engine.common import recipe
 import transformer_engine_extensions as tex
@@ -80,17 +80,19 @@ def to_numpy(tensor):
     return tensor.cpu().numpy()
 
 
-def set_layer_scale(module: torch.nn.Module, scales: float, num_gemms: int=1):
-    module.fp8_init(num_gemms=num_gemms)
-    assert len(scales) == num_gemms * 2, "Each gemm should be accompanied by 2 scales"
+def set_layer_scale(module: torch.nn.Module, scales: List[float]):
+    module.fp8_init()
     num_fp8_tensors = len(scales)
     scale = torch.ones(num_fp8_tensors, dtype=torch.float32, device="cuda")
     scale_inv = torch.ones(num_fp8_tensors, dtype=torch.float32, device="cuda")
+    amax_history_len = module.fp8_meta["recipe"].amax_history_len
+    amax_history = torch.zeros(amax_history_len, num_fp8_tensors, dtype=torch.float32, device="cuda")
     for i, s in enumerate(scales):
        scale[i] *= s
        scale_inv[i] /= s
     module.fp8_meta["scaling_fwd"].scale = scale
     module.fp8_meta["scaling_fwd"].scale_inv = scale_inv
+    module.fp8_meta["scaling_fwd"].amax_history = amax_history
 
 
 def te_infer(model: torch.nn.Module, inps: Union[Tuple[torch.tensor], torch.tensor], is_fp8: bool):
@@ -546,7 +548,7 @@ def test_export_softmax(softmax_def, precision):
         validate_result(fname, inp, model, atol=1e-3)
 
 
-@pytest.mark.parametrize("scale_factor", [[448, 448]])
+@pytest.mark.parametrize("scale_factors", [[448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -562,7 +564,7 @@ def test_export_softmax(softmax_def, precision):
     # (torch.bfloat16, True),
 ])
 def test_export_linear(
-    scale_factor: list,
+    scale_factors: List[float],
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -609,7 +611,7 @@ def test_export_linear(
             precision
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model.linear, scale_factor)
+            set_layer_scale(model.linear, scale_factors)
         do_export(model, inp, fname, use_fp8)
 
         if precision in (torch.bfloat16, ):
@@ -620,7 +622,7 @@ def test_export_linear(
             validate_result(fname, inp, model, atol=5e-4, is_fp8=use_fp8)
 
 
-@pytest.mark.parametrize("scale_factor", [[448, 448]])
+@pytest.mark.parametrize("scale_factors", [[448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -633,7 +635,7 @@ def test_export_linear(
     (torch.float16, False),
 ])
 def test_export_layernorm_linear(
-    scale_factor: list,
+    scale_factors: List[float],
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -660,7 +662,7 @@ def test_export_layernorm_linear(
             params_dtype=precision,
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model, scale_factor)
+            set_layer_scale(model, scale_factors)
         do_export(model, inp, fname, use_fp8)
         if not use_fp8:
             validate_result(fname, inp, model, atol=1e-3)
@@ -668,7 +670,7 @@ def test_export_layernorm_linear(
             validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
 
 
-@pytest.mark.parametrize("scale_factor", [[224, 224, 448, 448]])
+@pytest.mark.parametrize("scale_factors", [[224, 224, 448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -681,7 +683,7 @@ def test_export_layernorm_linear(
     (torch.float16, False),
 ])
 def test_export_layernorm_mlp(
-    scale_factor: list,
+    scale_factors: List[float],
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -709,7 +711,7 @@ def test_export_layernorm_mlp(
             params_dtype=precision,
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model, scale_factor, num_gemms=2)
+            set_layer_scale(model, scale_factors)
         do_export(model, inp, fname, use_fp8)
         if not use_fp8:
             validate_result(fname, inp, model, atol=5e-4)
@@ -778,10 +780,10 @@ def test_export_core_attention(
 
 
 def set_mha_scales(module,
-    scale_factor_qkv: list=[448, 448],
-    scale_factor_query: list=[112, 112],
-    scale_factor_kv: list=[224, 224],
-    scale_factor_proj: list=[448, 448]
+    scale_factor_qkv: List[float]=[448, 448],
+    scale_factor_query: List[float]=[112, 112],
+    scale_factor_kv: List[float]=[224, 224],
+    scale_factor_proj: List[float]=[448, 448]
 ):
     if module.attention_type == "self":
         if module.input_layernorm:
@@ -842,10 +844,10 @@ def test_export_multihead_attention(
     input_layernorm: bool,
     attention_type: str,
     fuse_qkv_params: bool,
-    scale_factor_qkv: list,
-    scale_factor_query: list,
-    scale_factor_kv: list,
-    scale_factor_proj: list,
+    scale_factor_qkv: List[float],
+    scale_factor_query: List[float],
+    scale_factor_kv: List[float],
+    scale_factor_proj: List[float],
 ):
     hidden_size = 256
     sequence_length = 128
@@ -918,7 +920,7 @@ def set_transformer_layer_scales(module,
     if module.layer_type == "decoder":
         set_mha_scales(module.inter_attention, *scales_inter_attn)
     # set layernorm mlp scales
-    set_layer_scale(module.layernorm_mlp, scales_layernorm_mlp, num_gemms=2)
+    set_layer_scale(module.layernorm_mlp, scales_layernorm_mlp)
 
 @pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
@@ -942,11 +944,11 @@ def test_export_transformer_layer(
     precision: torch.dtype,
     fuse_qkv_params: bool,
     apply_query_key_layer_scaling: bool,
-    scale_factor_qkv: list,
-    scale_factor_query: list,
-    scale_factor_kv: list,
-    scale_factor_proj: list,
-    scale_factor_layernorm_mlp: list,
+    scale_factor_qkv: List[float],
+    scale_factor_query: List[float],
+    scale_factor_kv: List[float],
+    scale_factor_proj: List[float],
+    scale_factor_layernorm_mlp: List[float],
 ):
     # Layer configuration
     hidden_size = 64
