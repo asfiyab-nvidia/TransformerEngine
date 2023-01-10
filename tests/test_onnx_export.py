@@ -14,7 +14,7 @@ import math
 import onnxruntime as ort
 import torch
 from torch import nn as nn
-from typing import Union, Tuple
+from typing import Union, Tuple, List
 import transformer_engine.pytorch as te
 from transformer_engine.common import recipe
 import transformer_engine_extensions as tex
@@ -84,12 +84,19 @@ def to_numpy(tensor):
     return tensor.cpu().numpy()
 
 
-def set_layer_scale(module: torch.nn.Module, scale: float):
+def set_layer_scale(module: torch.nn.Module, scales: List[float]):
     module.fp8_init()
-    module.fp8_meta["scaling_fwd"].scale = torch.ones(
-        2, dtype=torch.float32, device="cuda") / scale
-    module.fp8_meta["scaling_fwd"].scale_inv = torch.ones(
-        2, dtype=torch.float32, device="cuda") * scale
+    num_fp8_tensors = len(scales)
+    scale = torch.ones(num_fp8_tensors, dtype=torch.float32, device="cuda")
+    scale_inv = torch.ones(num_fp8_tensors, dtype=torch.float32, device="cuda")
+    amax_history_len = module.fp8_meta["recipe"].amax_history_len
+    amax_history = torch.zeros(amax_history_len, num_fp8_tensors, dtype=torch.float32, device="cuda")
+    for i, s in enumerate(scales):
+       scale[i] *= s
+       scale_inv[i] /= s
+    module.fp8_meta["scaling_fwd"].scale = scale
+    module.fp8_meta["scaling_fwd"].scale_inv = scale_inv
+    module.fp8_meta["scaling_fwd"].amax_history = amax_history
 
 
 def te_infer(model: torch.nn.Module, inps: Union[Tuple[torch.tensor], torch.tensor], is_fp8: bool):
@@ -556,7 +563,7 @@ def test_export_softmax(softmax_def, precision):
         validate_result(fname, inp, model, atol=1e-3)
 
 
-@pytest.mark.parametrize("scale_factor", [1])
+@pytest.mark.parametrize("scale_factors", [[448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -572,7 +579,7 @@ def test_export_softmax(softmax_def, precision):
     # (torch.bfloat16, True),
 ])
 def test_export_linear(
-    scale_factor: float,
+    scale_factors: List[float],
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -614,7 +621,7 @@ def test_export_linear(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.linear{fp8_str}{bias_str}{high_prec_str}.onnx"
-    with te.fp8_autocast(enabled=use_fp8):
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
         model = Test_Linear(
             in_features,
             out_features,
@@ -623,18 +630,18 @@ def test_export_linear(
             precision
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model.linear, scale_factor)
+            set_layer_scale(model.linear, scale_factors)
         do_export(model, inp, fname, use_fp8)
 
         if precision in (torch.bfloat16, ):
             return
         if not use_fp8:
-            validate_result(fname, inp, model, atol=1e-3)
+            validate_result(fname, inp, model, atol=5e-4)
         else:
-            validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
+            validate_result(fname, inp, model, atol=5e-4, is_fp8=use_fp8)
 
 
-@pytest.mark.parametrize("scale_factor", [112])
+@pytest.mark.parametrize("scale_factors", [[448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -647,7 +654,7 @@ def test_export_linear(
     (torch.float16, False),
 ])
 def test_export_layernorm_linear(
-    scale_factor: float,
+    scale_factors: List[float],
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -668,7 +675,7 @@ def test_export_layernorm_linear(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_linear{fp8_str}{bias_str}{high_prec_str}.onnx"
-    with te.fp8_autocast(enabled=use_fp8):
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
         model = te.LayerNormLinear(
             hidden_size,
             3 * hidden_size,
@@ -678,7 +685,7 @@ def test_export_layernorm_linear(
             params_dtype=precision,
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model, scale_factor)
+            set_layer_scale(model, scale_factors)
         do_export(model, inp, fname, use_fp8)
         if not use_fp8:
             validate_result(fname, inp, model, atol=1e-3)
@@ -686,7 +693,7 @@ def test_export_layernorm_linear(
             validate_result(fname, inp, model, atol=1e-3, is_fp8=use_fp8)
 
 
-@pytest.mark.parametrize("scale_factor", [112])
+@pytest.mark.parametrize("scale_factors", [[224, 224, 448, 448]])
 @pytest.mark.parametrize("use_fp8", [False, True])
 # Returning the bias is a TE fusion optimization we don't care about.
 @pytest.mark.parametrize("return_bias", [False])
@@ -699,7 +706,7 @@ def test_export_layernorm_linear(
     (torch.float16, False),
 ])
 def test_export_layernorm_mlp(
-    scale_factor: float,
+    scale_factors: List[float],
     use_fp8: bool,
     use_bias: bool,
     return_bias: bool,
@@ -721,7 +728,7 @@ def test_export_layernorm_mlp(
     bias_str = "_bias" if use_bias else ""
     high_prec_str = dtype2str(precision)
     fname = f"te.layernorm_mlp{fp8_str}{bias_str}{high_prec_str}.onnx"
-    with te.fp8_autocast(enabled=use_fp8):
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
         model = te.LayerNormMLP(
             hidden_size,
             ffn_hidden_size,
@@ -731,12 +738,12 @@ def test_export_layernorm_mlp(
             params_dtype=precision,
         ).to(device='cuda')
         if use_fp8:
-            set_layer_scale(model, scale_factor)
+            set_layer_scale(model, scale_factors)
         do_export(model, inp, fname, use_fp8)
         if not use_fp8:
-            validate_result(fname, inp, model, atol=1e-3)
+            validate_result(fname, inp, model, atol=5e-4)
         else:
-            validate_result(fname, inp, model, atol=2e-2, is_fp8=use_fp8)
+            validate_result(fname, inp, model, atol=7e-3, is_fp8=use_fp8)
 
 @skip_FP8
 @pytest.mark.parametrize(
@@ -799,6 +806,33 @@ def test_export_core_attention(
     validate_result(fname, inp, model, atol=1e-2)
 
 
+def set_mha_scales(module,
+    scale_factor_qkv: List[float]=[448, 448],
+    scale_factor_query: List[float]=[112, 112],
+    scale_factor_kv: List[float]=[224, 224],
+    scale_factor_proj: List[float]=[448, 448]
+):
+    if module.attention_type == "self":
+        if module.input_layernorm:
+            # LayernormLinear layer scale init
+            set_layer_scale(module.layernorm_qkv, scale_factor_qkv)
+        else:
+            # Linear layer scale init
+            set_layer_scale(module.qkv, scale_factor_qkv)
+    else:
+        if module.input_layernorm:
+            # LayernormLinear layer scale init
+            set_layer_scale(module.layernorm_query, scale_factor_query)
+        else:
+            # Linear layer scale init
+            set_layer_scale(module.query_layer, scale_factor_query)
+
+        # Linear layer scale init
+        set_layer_scale(module.key_value, scale_factor_kv)
+
+    # Linear layer scale init
+    set_layer_scale(module.proj, scale_factor_proj)
+
 test_configs_multihead_attention = [
     #"use_mask, attn_mask_type"
     (False,    "causal"),  # calls ScaledUpperTriangMaskedSoftmax
@@ -824,6 +858,10 @@ test_configs_attention_type = [
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
 @pytest.mark.parametrize("return_layernorm_output", [False])
 @pytest.mark.parametrize("input_layernorm, attention_type, fuse_qkv_params", test_configs_attention_type)
+@pytest.mark.parametrize("scale_factor_qkv", [[448, 448]])
+@pytest.mark.parametrize("scale_factor_query", [[112, 112]])
+@pytest.mark.parametrize("scale_factor_kv", [[224, 224]])
+@pytest.mark.parametrize("scale_factor_proj", [[448, 448]])
 def test_export_multihead_attention(
     use_fp8: bool,
     use_mask: bool,
@@ -832,7 +870,11 @@ def test_export_multihead_attention(
     return_layernorm_output: bool,
     input_layernorm: bool,
     attention_type: str,
-    fuse_qkv_params: bool
+    fuse_qkv_params: bool,
+    scale_factor_qkv: List[float],
+    scale_factor_query: List[float],
+    scale_factor_kv: List[float],
+    scale_factor_proj: List[float],
 ):
     # Skip FP8 tests on non-hopper devices
     if use_fp8 and torch.cuda.get_device_properties(torch.cuda.current_device()).major < 9:
@@ -877,21 +919,39 @@ def test_export_multihead_attention(
     input_ln_str = "_input-ln" if input_layernorm else ""
     fname = f"te.multihead_attention{fp8_str}{attn_mask_str}{attn_type_str}{input_ln_str}{fuse_qkv_str}{dtype_str}.onnx"
 
-    model = te.transformer.MultiHeadAttention(
-        *attention_args,
-        attn_mask_type=attn_mask_type,
-        params_dtype=precision,
-        return_layernorm_output=return_layernorm_output,
-        input_layernorm=input_layernorm,
-        attention_type=attention_type,
-        fuse_qkv_params=fuse_qkv_params,
-    ).to(device='cuda')
-    do_export(model, inp, fname, use_fp8, input_names=input_names)
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
-    elif precision != torch.float16:
-        validate_result(fname, inp, model, atol=1e-2, is_fp8=use_fp8)
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
+        model = te.transformer.MultiHeadAttention(
+            *attention_args,
+            attn_mask_type=attn_mask_type,
+            params_dtype=precision,
+            return_layernorm_output=return_layernorm_output,
+            input_layernorm=input_layernorm,
+            attention_type=attention_type,
+            fuse_qkv_params=fuse_qkv_params,
+        ).to(device='cuda')
+        if use_fp8:
+            set_mha_scales(model,
+                scale_factor_qkv,
+                scale_factor_query,
+                scale_factor_kv,
+                scale_factor_proj)
 
+        do_export(model, inp, fname, use_fp8, input_names=input_names)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        elif precision != torch.float16:
+            validate_result(fname, inp, model, atol=5e-3, is_fp8=use_fp8)
+
+def set_transformer_layer_scales(module,
+    scales_self_attn: list,
+    scales_inter_attn: list,
+    scales_layernorm_mlp: list=[224, 224, 448, 448]):
+    # set mha scales
+    set_mha_scales(module.self_attention, *scales_self_attn)
+    if module.layer_type == "decoder":
+        set_mha_scales(module.inter_attention, *scales_inter_attn)
+    # set layernorm mlp scales
+    set_layer_scale(module.layernorm_mlp, scales_layernorm_mlp)
 
 @pytest.mark.parametrize("use_fp8", [False, True])
 @pytest.mark.parametrize("use_mask, attn_mask_type", test_configs_multihead_attention)
@@ -902,6 +962,11 @@ def test_export_multihead_attention(
 @pytest.mark.parametrize("precision", [torch.float32, torch.float16])
 @pytest.mark.parametrize("fuse_qkv_params", [False, True])
 @pytest.mark.parametrize("apply_query_key_layer_scaling", [True, False])
+@pytest.mark.parametrize("scale_factor_qkv", [[448, 448]])
+@pytest.mark.parametrize("scale_factor_query", [[112, 112]])
+@pytest.mark.parametrize("scale_factor_kv", [[224, 224]])
+@pytest.mark.parametrize("scale_factor_proj", [[448, 448]])
+@pytest.mark.parametrize("scale_factor_layernorm_mlp", [[224, 224, 448, 448]])
 def test_export_transformer_layer(
     use_fp8: bool,
     use_mask: bool,
@@ -909,7 +974,12 @@ def test_export_transformer_layer(
     output_layernorm: bool,
     precision: torch.dtype,
     fuse_qkv_params: bool,
-    apply_query_key_layer_scaling: bool
+    apply_query_key_layer_scaling: bool,
+    scale_factor_qkv: List[float],
+    scale_factor_query: List[float],
+    scale_factor_kv: List[float],
+    scale_factor_proj: List[float],
+    scale_factor_layernorm_mlp: List[float],
 ):
     # Skip FP8 tests on non-hopper devices
     if use_fp8 and torch.cuda.get_device_properties(torch.cuda.current_device()).major < 9:
@@ -939,17 +1009,30 @@ def test_export_transformer_layer(
     attn_mask_str = get_attn_mask_str(use_mask, attn_mask_type)
     fname = f"te.transformer_layer{fp8_str}{attn_mask_str}{fuse_qkv_params_str}{qk_scaling_str}{high_prec_str}.onnx"
 
-    model = te.TransformerLayer(
-        hidden_size,
-        ffn_hidden_size,
-        num_attention_heads,
-        self_attn_mask_type=attn_mask_type,
-        output_layernorm=output_layernorm,
-        params_dtype=precision,
-        fuse_qkv_params=fuse_qkv_params,
-        apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
-    do_export(model, inp, fname, use_fp8)
-    if not use_fp8:
-        validate_result(fname, inp, model, atol=1e-3)
-    elif precision != torch.float16:
-        validate_result(fname, inp, model, atol=5e-1, is_fp8=use_fp8)
+    with te.fp8_autocast(enabled=use_fp8, fp8_recipe=create_fp8_recipe()):
+        model = te.TransformerLayer(
+            hidden_size,
+            ffn_hidden_size,
+            num_attention_heads,
+            self_attn_mask_type=attn_mask_type,
+            output_layernorm=output_layernorm,
+            params_dtype=precision,
+            fuse_qkv_params=fuse_qkv_params,
+            apply_query_key_layer_scaling=apply_query_key_layer_scaling).to(device='cuda')
+        if use_fp8:
+            mha_scales = [
+                scale_factor_qkv,
+                scale_factor_query,
+                scale_factor_kv,
+                scale_factor_proj
+            ]
+            set_transformer_layer_scales(model,
+                scales_self_attn=mha_scales,
+                scales_inter_attn=mha_scales,
+                scales_layernorm_mlp=scale_factor_layernorm_mlp)
+
+        do_export(model, inp, fname, use_fp8)
+        if not use_fp8:
+            validate_result(fname, inp, model, atol=1e-3)
+        elif precision != torch.float16:
+            validate_result(fname, inp, model, atol=1e-2, is_fp8=use_fp8)
